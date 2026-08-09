@@ -1,0 +1,1 @@
+We're building an MVP for a multimodal RAG within the Financial industry. The stack is FastAPI, Qdrant vectordb, and MinIO blob.
