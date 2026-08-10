@@ -1,3 +1,4 @@
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -5,6 +6,15 @@ from datetime import UTC, datetime
 from app.config import Settings
 from app.models.api import IngestMetadata
 from app.models.metadata import ChunkMetadata, QdrantPayload
+
+_FENCE_PATTERN = re.compile(r"^```[a-zA-Z0-9_-]*\s*(.*?)\s*```$", re.DOTALL)
+
+
+def strip_code_fence(text: str) -> str:
+    """Remove a single fenced block wrapping the whole LLM response."""
+    stripped = text.strip()
+    match = _FENCE_PATTERN.match(stripped)
+    return match.group(1).strip() if match else stripped
 
 
 @dataclass
@@ -19,16 +29,37 @@ class Chunker:
         self._chunk_overlap = settings.chunk_overlap
 
     def split_markdown(self, markdown: str, page_number: int = 1) -> list[TextChunk]:
-        normalized = markdown.strip()
+        normalized = strip_code_fence(markdown)
         if not normalized:
             return []
 
         chunks: list[TextChunk] = []
+        headings: dict[int, str] = {}
+        pending: list[str] = []
+
         for block in self._split_markdown_blocks(normalized):
+            level = self._heading_level(block)
+            if level is not None:
+                chunks.extend(self._flush(pending, headings, page_number))
+                pending = []
+                headings = {lvl: text for lvl, text in headings.items() if lvl < level}
+                headings[level] = block.lstrip("#").strip()
+                continue
+
             if self._is_markdown_table(block):
-                chunks.append(TextChunk(text=block, page_number=page_number))
-            else:
-                chunks.extend(self._split_plain_text(block, page_number))
+                chunks.extend(self._flush(pending, headings, page_number))
+                pending = []
+                chunks.append(
+                    TextChunk(
+                        text=self._with_context(block, headings),
+                        page_number=page_number,
+                    )
+                )
+                continue
+
+            pending.append(block)
+
+        chunks.extend(self._flush(pending, headings, page_number))
         return chunks
 
     def split_json(self, json_text: str, page_number: int = 1) -> list[TextChunk]:
@@ -73,6 +104,33 @@ class Chunker:
             )
             payloads.append(QdrantPayload(raw_text=chunk.text, metadata=metadata))
         return payloads
+
+    def _flush(
+        self,
+        pending: list[str],
+        headings: dict[int, str],
+        page_number: int,
+    ) -> list[TextChunk]:
+        if not pending:
+            return []
+        return [
+            TextChunk(text=self._with_context(chunk.text, headings), page_number=page_number)
+            for chunk in self._split_plain_text("\n\n".join(pending), page_number)
+        ]
+
+    @staticmethod
+    def _with_context(text: str, headings: dict[int, str]) -> str:
+        if not headings:
+            return text
+        breadcrumb = " > ".join(headings[level] for level in sorted(headings))
+        return f"{breadcrumb}\n\n{text}"
+
+    @staticmethod
+    def _heading_level(block: str) -> int | None:
+        if "\n" in block:
+            return None
+        match = re.match(r"^(#{1,6})\s+\S", block)
+        return len(match.group(1)) if match else None
 
     def _split_plain_text(self, text: str, page_number: int) -> list[TextChunk]:
         chunks: list[TextChunk] = []

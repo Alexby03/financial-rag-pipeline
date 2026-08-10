@@ -1,10 +1,10 @@
 import base64
 import json
 import mimetypes
-import re
 
 from app.models.enums import DocType
 from app.models.parsed import ParsedContent
+from app.services.chunker import strip_code_fence
 from app.services.openai_client import OpenAIService
 
 MARKDOWN_SYSTEM_PROMPT = """You extract content from Financial documents.
@@ -91,8 +91,5 @@ class DocumentParser:
 
     @staticmethod
     def _normalize_json(raw: str) -> str:
-        cleaned = raw.strip()
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        parsed = json.loads(cleaned)
+        parsed = json.loads(strip_code_fence(raw))
         return json.dumps(parsed, ensure_ascii=False, indent=2)
