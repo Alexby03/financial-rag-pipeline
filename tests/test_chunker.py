@@ -50,6 +50,26 @@ def test_markdown_table_stays_intact() -> None:
     assert "| EBITDA | 20 |" in table_chunks[0].text
 
 
+def test_headings_are_merged_into_content_chunks() -> None:
+    settings = Settings(openai_api_key="test-key")
+    chunker = Chunker(settings=settings)
+    markdown = (
+        "```markdown\n"
+        "# Kvartalsrapport Q3 2024\n\n"
+        "## 2. Finansiell översikt\n\n"
+        "| Nyckeltal | Värde (MSEK) |\n"
+        "| --- | --- |\n"
+        "| Nettoomsättning | 150,0 |\n"
+        "```"
+    )
+    chunks = chunker.split_markdown(markdown)
+
+    assert len(chunks) == 1
+    assert "```" not in chunks[0].text
+    assert chunks[0].text.startswith("Kvartalsrapport Q3 2024 > 2. Finansiell översikt")
+    assert "| Nettoomsättning | 150,0 |" in chunks[0].text
+
+
 def test_qdrant_payload_roundtrip() -> None:
     metadata = ChunkMetadata(
         tenant_id="tenant_1",
