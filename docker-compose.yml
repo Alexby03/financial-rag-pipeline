@@ -1,6 +1,6 @@
 services:
   qdrant:
-    image: qdrant/qdrant:v1.12.5
+    image: qdrant/qdrant:latest
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -13,7 +13,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -25,7 +25,7 @@ services:
       - minio_data:/data
 
   minio-init:
-    image: minio/mc:RELEASE.2024-11-07T00-52-20Z
+    image: minio/mc:latest
     depends_on:
       - minio
     entrypoint: >
