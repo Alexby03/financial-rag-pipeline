@@ -44,6 +44,7 @@ class IngestService:
         payloads = self._chunker.build_payloads(text_chunks, metadata, filename)
 
         if payloads:
+            self._qdrant.delete_by_document(metadata.tenant_id, filename)
             vectors = self._embedder.embed_texts([payload.raw_text for payload in payloads])
             self._qdrant.upsert_chunks(vectors, payloads)
 
