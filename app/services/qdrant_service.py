@@ -83,16 +83,16 @@ class QdrantService:
                 )
             )
 
-        results = self._client.search(
+        response = self._client.query_points(
             collection_name=self._collection,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=qmodels.Filter(must=must),
             limit=limit,
             with_payload=True,
         )
 
         hits: list[tuple[QdrantPayload, float]] = []
-        for hit in results:
+        for hit in response.points:
             if hit.payload is None:
                 continue
             payload = QdrantPayload.model_validate(hit.payload)

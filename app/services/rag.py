@@ -4,7 +4,7 @@ from app.models.api import QueryRequest, QueryResponse, SourceChunk
 from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
 from app.services.openai_client import OpenAIService
-from app.services.qdrant_client import QdrantService
+from app.services.qdrant_service import QdrantService
 
 RAG_SYSTEM_PROMPT = """You are an Financial analyst assistant.
 Answer using only the provided raw_text context chunks.

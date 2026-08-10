@@ -5,7 +5,7 @@ from app.services.chunker import Chunker
 from app.services.embedder import Embedder
 from app.services.minio_client import MinioStorage
 from app.services.parser import DocumentParser
-from app.services.qdrant_client import QdrantService
+from app.services.qdrant_service import QdrantService
 
 
 class IngestService:

@@ -7,7 +7,7 @@ from app.services.ingest import IngestService
 from app.services.minio_client import MinioStorage
 from app.services.openai_client import OpenAIService
 from app.services.parser import DocumentParser
-from app.services.qdrant_client import QdrantService
+from app.services.qdrant_service import QdrantService
 from app.services.rag import RagService
 
 
