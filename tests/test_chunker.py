@@ -24,12 +24,15 @@ def test_build_payloads_links_chunks() -> None:
         quarter=3,
         language="sv",
     )
-    payloads = chunker.build_payloads(chunks, metadata, "report.pdf")
+    payloads = chunker.build_payloads(
+        chunks, metadata, "report.pdf", "tenant_1/doc-1/report.pdf"
+    )
 
     assert payloads
     assert payloads[0].metadata.previous_chunk_id is None
     assert payloads[0].metadata.next_chunk_id == payloads[1].metadata.chunk_id
     assert payloads[-1].metadata.next_chunk_id is None
+    assert payloads[0].metadata.object_key == "tenant_1/doc-1/report.pdf"
 
 
 def test_markdown_table_stays_intact() -> None:
@@ -79,6 +82,7 @@ def test_qdrant_payload_roundtrip() -> None:
         year=2024,
         quarter=None,
         source_filename="contract.pdf",
+        object_key="tenant_1/doc-1/contract.pdf",
         page_number=1,
         chunk_id="uuid-1",
         previous_chunk_id=None,
@@ -101,6 +105,7 @@ def test_rag_orders_linked_neighbors() -> None:
         year=2024,
         quarter=3,
         source_filename="report.pdf",
+        object_key="tenant_1/doc-1/report.pdf",
         page_number=1,
         chunk_id="c2",
         previous_chunk_id="c1",

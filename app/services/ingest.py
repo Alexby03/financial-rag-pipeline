@@ -41,7 +41,7 @@ class IngestService:
         else:
             text_chunks = self._chunker.split_markdown(parsed.text)
 
-        payloads = self._chunker.build_payloads(text_chunks, metadata, filename)
+        payloads = self._chunker.build_payloads(text_chunks, metadata, filename, object_key)
 
         if payloads:
             self._qdrant.delete_by_document(metadata.tenant_id, filename)

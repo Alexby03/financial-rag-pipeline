@@ -78,6 +78,7 @@ class Chunker:
         chunks: list[TextChunk],
         ingest_metadata: IngestMetadata,
         source_filename: str,
+        object_key: str,
     ) -> list[QdrantPayload]:
         if not chunks:
             return []
@@ -95,6 +96,7 @@ class Chunker:
                 year=ingest_metadata.year,
                 quarter=ingest_metadata.quarter,
                 source_filename=source_filename,
+                object_key=object_key,
                 page_number=chunk.page_number,
                 chunk_id=chunk_ids[index],
                 previous_chunk_id=chunk_ids[index - 1] if index > 0 else None,

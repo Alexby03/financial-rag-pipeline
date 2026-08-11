@@ -13,6 +13,7 @@ class ChunkMetadata(BaseModel):
     year: int
     quarter: int | None = Field(default=None, ge=1, le=4)
     source_filename: str
+    object_key: str
     page_number: int
     chunk_id: str
     previous_chunk_id: str | None
