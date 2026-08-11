@@ -58,7 +58,7 @@ class RagService:
 
         context_text = self._format_context(context_payloads)
         generation_started = perf_counter()
-        answer = self._openai.chat_completion(
+        reasoned = self._openai.answer_with_reasoning(
             RAG_SYSTEM_PROMPT,
             f"Question:\n{request.question}\n\nContext:\n{context_text}",
         )
@@ -74,8 +74,9 @@ class RagService:
             context_payloads=context_payloads,
             retrieval_ms=retrieval_ms,
             generation_ms=generation_ms,
+            reasoning_summary=reasoned.reasoning_summary,
         )
-        return QueryResponse(answer=answer, sources=sources, trace=trace)
+        return QueryResponse(answer=reasoned.answer, sources=sources, trace=trace)
 
     def _build_trace(
         self,
@@ -84,6 +85,7 @@ class RagService:
         context_payloads: list[QdrantPayload],
         retrieval_ms: int,
         generation_ms: int,
+        reasoning_summary: str,
     ) -> RetrievalTrace:
         hit_ids = {payload.metadata.chunk_id for payload, _ in hits}
         filters: dict[str, str | int] = {"tenant_id": request.tenant_id}
@@ -98,7 +100,7 @@ class RagService:
 
         return RetrievalTrace(
             embedding_model=self._settings.openai_embedding_model,
-            answer_model=self._settings.openai_chat_model,
+            answer_model=self._settings.openai_answer_model,
             filters=filters,
             top_k=request.top_k,
             hits=[
@@ -119,6 +121,7 @@ class RagService:
             context_chunk_count=len(context_payloads),
             retrieval_ms=retrieval_ms,
             generation_ms=generation_ms,
+            reasoning_summary=reasoning_summary,
         )
 
     @staticmethod

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -7,8 +8,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     openai_api_key: str
+    # Vision model used for parsing documents during ingest.
     openai_chat_model: str = "gpt-4o"
     openai_embedding_model: str = "text-embedding-3-small"
+    # Reasoning model used to answer queries, so the UI can show its reasoning summary.
+    openai_answer_model: str = "gpt-5-mini"
+    openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] = "medium"
+    openai_reasoning_summary: Literal["auto", "concise", "detailed"] = "auto"
 
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
