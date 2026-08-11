@@ -1,10 +1,21 @@
 """RAG query path — see docs/rag_strategy.md for linked-chunk retrieval rules."""
 
-from app.models.api import QueryRequest, QueryResponse, SourceChunk
+from time import perf_counter
+
+from app.config import Settings
+from app.models.api import (
+    QueryRequest,
+    QueryResponse,
+    RetrievalTrace,
+    RetrievedChunkTrace,
+    SourceChunk,
+)
 from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
 from app.services.openai_client import OpenAIService
 from app.services.qdrant_service import QdrantService
+
+PREVIEW_LENGTH = 160
 
 RAG_SYSTEM_PROMPT = """You are an Financial analyst assistant.
 Answer using only the provided raw_text context chunks.
@@ -22,12 +33,15 @@ class RagService:
         embedder: Embedder,
         qdrant: QdrantService,
         openai_service: OpenAIService,
+        settings: Settings,
     ) -> None:
         self._embedder = embedder
         self._qdrant = qdrant
         self._openai = openai_service
+        self._settings = settings
 
     def query(self, request: QueryRequest) -> QueryResponse:
+        retrieval_started = perf_counter()
         query_vector = self._embedder.embed_query(request.question)
         hits = self._qdrant.search(
             query_vector=query_vector,
@@ -40,17 +54,83 @@ class RagService:
         )
 
         context_payloads = self._resolve_context(hits, request.expand_neighbors)
+        retrieval_ms = self._elapsed_ms(retrieval_started)
+
         context_text = self._format_context(context_payloads)
+        generation_started = perf_counter()
         answer = self._openai.chat_completion(
             RAG_SYSTEM_PROMPT,
             f"Question:\n{request.question}\n\nContext:\n{context_text}",
         )
+        generation_ms = self._elapsed_ms(generation_started)
 
         sources = [
             SourceChunk(raw_text=payload.raw_text, metadata=payload.metadata, score=score)
             for payload, score in hits
         ]
-        return QueryResponse(answer=answer, sources=sources)
+        trace = self._build_trace(
+            request=request,
+            hits=hits,
+            context_payloads=context_payloads,
+            retrieval_ms=retrieval_ms,
+            generation_ms=generation_ms,
+        )
+        return QueryResponse(answer=answer, sources=sources, trace=trace)
+
+    def _build_trace(
+        self,
+        request: QueryRequest,
+        hits: list[tuple[QdrantPayload, float]],
+        context_payloads: list[QdrantPayload],
+        retrieval_ms: int,
+        generation_ms: int,
+    ) -> RetrievalTrace:
+        hit_ids = {payload.metadata.chunk_id for payload, _ in hits}
+        filters: dict[str, str | int] = {"tenant_id": request.tenant_id}
+        if request.doc_type:
+            filters["doc_type"] = request.doc_type.value
+        if request.category:
+            filters["category"] = request.category.value
+        if request.year is not None:
+            filters["year"] = request.year
+        if request.quarter is not None:
+            filters["quarter"] = request.quarter
+
+        return RetrievalTrace(
+            embedding_model=self._settings.openai_embedding_model,
+            answer_model=self._settings.openai_chat_model,
+            filters=filters,
+            top_k=request.top_k,
+            hits=[
+                RetrievedChunkTrace(
+                    chunk_id=payload.metadata.chunk_id,
+                    source_filename=payload.metadata.source_filename,
+                    page_number=payload.metadata.page_number,
+                    score=score,
+                    preview=self._preview(payload.raw_text),
+                )
+                for payload, score in hits
+            ],
+            neighbor_chunk_ids=[
+                payload.metadata.chunk_id
+                for payload in context_payloads
+                if payload.metadata.chunk_id not in hit_ids
+            ],
+            context_chunk_count=len(context_payloads),
+            retrieval_ms=retrieval_ms,
+            generation_ms=generation_ms,
+        )
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> int:
+        return int((perf_counter() - started) * 1000)
+
+    @staticmethod
+    def _preview(raw_text: str) -> str:
+        collapsed = " ".join(raw_text.split())
+        if len(collapsed) <= PREVIEW_LENGTH:
+            return collapsed
+        return f"{collapsed[:PREVIEW_LENGTH]}..."
 
     def _resolve_context(
         self,

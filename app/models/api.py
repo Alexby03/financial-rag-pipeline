@@ -40,9 +40,33 @@ class SourceChunk(BaseModel):
     score: float | None = None
 
 
+class RetrievedChunkTrace(BaseModel):
+    chunk_id: str
+    source_filename: str
+    page_number: int
+    score: float
+    preview: str
+
+
+class RetrievalTrace(BaseModel):
+    """What the agent actually did to answer, surfaced to the user for transparency."""
+
+    embedding_model: str
+    answer_model: str
+    filters: dict[str, str | int] = Field(default_factory=dict)
+    top_k: int
+    hits: list[RetrievedChunkTrace] = Field(default_factory=list)
+    neighbor_chunk_ids: list[str] = Field(default_factory=list)
+    context_chunk_count: int = 0
+    retrieval_ms: int = 0
+    generation_ms: int = 0
+    reasoning_summary: str = ""
+
+
 class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceChunk]
+    trace: RetrievalTrace
 
 
 class SourceUrlResponse(BaseModel):

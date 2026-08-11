@@ -58,6 +58,7 @@ def get_rag_service() -> RagService:
         embedder=get_embedder(),
         qdrant=get_qdrant_service(),
         openai_service=get_openai_service(),
+        settings=get_settings(),
     )
 
 
