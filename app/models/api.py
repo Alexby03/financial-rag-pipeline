@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.models.enums import Category, DocType
@@ -41,6 +43,13 @@ class SourceChunk(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceChunk]
+
+
+class SourceUrlResponse(BaseModel):
+    url: str
+    filename: str
+    disposition: Literal["inline", "attachment"]
+    expires_in_seconds: int
 
 
 class HealthResponse(BaseModel):

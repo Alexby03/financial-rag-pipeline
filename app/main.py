@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routes import health, ingest, query
+from app.api.routes import health, ingest, query, sources
 
 app = FastAPI(
     title="Financial RAG Pipeline",
@@ -11,3 +11,4 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(ingest.router)
 app.include_router(query.router)
+app.include_router(sources.router)
