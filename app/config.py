@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "rag-documents"
     minio_secure: bool = False
+    # Host the browser resolves; differs from minio_endpoint once the API runs inside Docker.
+    minio_public_endpoint: str = "localhost:9000"
+    presigned_url_ttl_seconds: int = 900
 
     default_tenant_id: str = "default_tenant_test_corp_123"
     log_level: str = "INFO"
