@@ -32,7 +32,7 @@ QUERY_RESPONSE = QueryResponse(
                 quarter=3,
                 source_filename="q3_report_2024.pdf",
                 object_key="tenant_1/doc-1/q3_report_2024.pdf",
-                page_number=1,
+                page_number=4,
                 chunk_id="c1",
                 previous_chunk_id=None,
                 next_chunk_id="c2",
@@ -52,7 +52,7 @@ QUERY_RESPONSE = QueryResponse(
             RetrievedChunkTrace(
                 chunk_id="c1",
                 source_filename="q3_report_2024.pdf",
-                page_number=1,
+                page_number=4,
                 score=0.82,
                 preview="Nettoomsattning 150,0",
                 vector_rank=3,
@@ -109,8 +109,9 @@ def test_chat_renders_answer_trace_and_source_link() -> None:
         captions = " ".join(element.value for element in app.caption)
         assert "rankade om 20 kandidater" in captions
         assert "rerank 0.950" in captions
+        assert "sida 4" in rendered
         links = list(app.get("link_button"))
-        assert links and links[0].proto.url == SOURCE_URL_RESPONSE["url"]
+        assert links and links[0].proto.url == f"{SOURCE_URL_RESPONSE['url']}#page=4"
 
 
 def test_rerank_fallback_is_surfaced_as_a_warning() -> None:

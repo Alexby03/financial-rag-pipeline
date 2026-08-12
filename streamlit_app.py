@@ -31,6 +31,13 @@ def fetch_source_url(api_url: str, tenant_id: str, object_key: str) -> SourceUrl
     return SourceUrlResponse.model_validate(response.json())
 
 
+def source_link_url(link: SourceUrlResponse, page_number: int) -> str:
+    """The #page fragment stays in the browser, so it never invalidates the MinIO signature."""
+    if link.disposition == "inline" and link.filename.lower().endswith(".pdf"):
+        return f"{link.url}#page={page_number}"
+    return link.url
+
+
 def check_health(api_url: str) -> dict[str, str] | None:
     try:
         response = httpx.get(f"{api_url}/health", timeout=10.0)
@@ -116,7 +123,11 @@ def render_source(source: SourceChunk, api_url: str, index: int) -> None:
             if link is None:
                 st.caption("Filen saknas i MinIO")
             elif link.disposition == "inline":
-                st.link_button("Öppna", link.url, width="stretch")
+                st.link_button(
+                    "Öppna",
+                    source_link_url(link, meta.page_number),
+                    width="stretch",
+                )
             else:
                 st.link_button("Ladda ner", link.url, width="stretch")
         with st.expander("Visa chunk"):
