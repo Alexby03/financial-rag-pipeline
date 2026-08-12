@@ -6,16 +6,29 @@ How a document becomes searchable. The retrieval side is described in
 Entry point: `POST /ingest` → `IngestService.ingest`.
 
 ```
-file bytes → MinIO → parse → chunk → link → embed → Qdrant
+file bytes → hash → MinIO → parse → chunk → link → embed → Qdrant
 ```
 
-## 1. Storage first
+## 1. Identity, then storage
 
-Every document is stored before it is parsed, so the original is never lost if parsing fails.
+The first thing ingest does is hash the bytes. A sha256 digest of the file is the document's
+identity, and it is checked against the index before anything expensive happens: if the same
+tenant already has chunks carrying that hash, ingest returns immediately with
+`status="duplicate"`, the existing `object_key` and the existing chunk count. Nothing is
+uploaded, parsed, embedded or written.
+
+This matters because parsing is by far the most expensive step, and filenames are a terrible
+identity. `report.pdf`, `report (1).pdf` and `@report.pdf` are three names for one document, and
+before hashing each one produced its own complete set of chunks — paid for twice and retrieved
+twice, competing for slots in the same answer.
+
+Once a document is known to be new, it is stored before it is parsed, so the original is never
+lost if parsing fails.
 
 - `document_id` is a fresh UUID per ingest.
 - `object_key` is `{tenant_id}/{document_id}/{filename}` and is written into every chunk's
   metadata. Without it there is no path from a retrieved chunk back to the source file.
+- `content_hash` is written into every chunk's metadata alongside it.
 - Content type is guessed from the filename so MinIO serves the file correctly when the
   frontend later opens it.
 
@@ -51,6 +64,13 @@ rather than stored, which leaves a gap in the numbering instead of shifting ever
 
 The parsing prompt asks for faithful extraction rather than summarization, and requires
 financial tables to use Markdown table syntax with correct columns and rows.
+
+**Refusals must never reach the index.** Vision models decline signature pages, which are
+standard in agreements and reports. The prompt therefore tells the model to transcribe the
+printed text and mark a handwritten signature as `[signatur]` without identifying the signatory.
+As a backstop, `is_refusal` drops any page whose output is short and apologetic — otherwise
+"I'm sorry, I can't help with that." is stored as an ordinary chunk, where it is
+indistinguishable from real content to the embedder and to the reader.
 
 ## 3. Chunking
 
@@ -101,6 +121,7 @@ Every vector point carries this payload. The `metadata.*` fields are what filter
         "quarter": 3,
         "source_filename": "q3_report_2024.pdf",
         "object_key": "default_tenant_test_corp_123/uuid-doc/q3_report_2024.pdf",
+        "content_hash": "9dacf0e31040b708...",
         "page_number": 14,
         "chunk_id": "uuid123",
         "previous_chunk_id": "uuid122",
@@ -124,11 +145,18 @@ Valid enums:
 Chunk texts are embedded in one batch with `text-embedding-3-small` (1536 dimensions) and
 upserted with the chunk UUID as the point id.
 
-Re-ingesting the same filename for the same tenant deletes the previous chunks first, so ingest
-is idempotent per `(tenant_id, source_filename)` rather than appending duplicates.
+Before upserting, the previous version of the document is deleted. The delete matches on
+`tenant_id` and then on *either* the filename or the content hash, so a document that was edited
+keeps its name and replaces itself, and a document that was renamed is still recognized by its
+content. Ingest is therefore idempotent per `(tenant_id, source_filename)` and per
+`(tenant_id, content_hash)` rather than appending duplicates.
 
 ## Schema changes require re-ingestion
 
 `ChunkMetadata` is validated on read. Adding a required field makes every previously stored
 chunk fail validation and `/query` returns 500 until the affected documents are ingested again.
 Either re-ingest, or add the field as optional.
+
+`content_hash` was added as optional for exactly this reason. Chunks written before hashing keep
+validating, they simply carry `null` and therefore never match a duplicate check — the first
+re-ingest gives them a hash.

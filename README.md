@@ -39,7 +39,7 @@ Chat UI: http://localhost:8501
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check for Qdrant and MinIO |
-| POST | `/ingest` | Upload document with metadata |
+| POST | `/ingest` | Upload document with metadata, skipping content already indexed |
 | POST | `/query` | RAG query with tenant and optional filters |
 | GET | `/sources/url` | Presigned MinIO URL for a chunk's source file |
 
@@ -99,6 +99,11 @@ curl -X POST "http://localhost:8000/ingest" \
   -F "quarter=3" \
   -F "language=sv"
 ```
+
+Documents are identified by a sha256 of their bytes, not by filename. Uploading content that is
+already indexed for the tenant returns `status="duplicate"` with the existing chunk count in
+about a second, without parsing, so the same report under a new name never costs a second
+vision pass.
 
 ## Query example
 

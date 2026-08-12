@@ -21,6 +21,21 @@ rasterized to PNG per page before being sent; if this reappears, check that
 `DocumentParser._parse_pdf_pages` is still being taken and that no caller passes raw PDF bytes
 to `chat_completion_with_image`, which now only handles a single image.
 
+**Ingest returns `status="duplicate"` and indexes nothing.**
+Expected. The same tenant already has chunks with that content hash, so parsing was skipped. To
+force a re-parse — after changing the parser, say — delete the document's chunks first; the
+metadata alone cannot be corrected through `/ingest`.
+
+**The same document appears twice in the sources.**
+Chunks stored before content hashing carry `content_hash: null` and never match the duplicate
+check, so a re-ingest under a different filename lands alongside them. Re-ingest once under each
+name, or delete the hash-less chunks.
+
+**A chunk contains "I'm sorry, I can't help with that."**
+A vision refusal was stored as content. `is_refusal` in `DocumentParser` drops short apologetic
+pages, so a refusal that gets through is either longer than `REFUSAL_MAX_LENGTH` or phrased
+outside `REFUSAL_MARKERS`.
+
 **Rerank answers 404 `DeploymentNotFound`.**
 `COHERE_RERANK_MODEL` does not match the Foundry deployment name. The URL and API key can be
 entirely correct and you still get this. Copy the deployment name verbatim from the portal.
@@ -42,6 +57,12 @@ must be set separately.
 `get_settings` and the service factories in `app/api/deps.py` are `lru_cache`d, so `.env` is read
 once per process. Restart the API.
 
+**Code changes seem to apply to some requests but not others.**
+`uvicorn --reload` swaps modules between requests, so a long ingest started before a reload
+finishes on the old code while the next request runs the new. When verifying a change, restart
+deliberately and check that the port is not already held by an older server — a second uvicorn
+exits with `[Errno 10048]` and every request silently keeps hitting the first one.
+
 **Installing Streamlit changes Starlette's version.**
 Streamlit and FastAPI share transitive dependencies. The combination in `requirements.txt` is
 verified; after any dependency change, run the test suite before assuming the API still boots.
@@ -59,6 +80,11 @@ different id. This is the single largest gap before anything resembling producti
 and the index is carried through to the chunk — but a page whose parse comes back empty is
 skipped, so numbering follows the source document rather than the stored chunks. Non-paginated
 inputs (images, plain text, org charts) are always page 1.
+
+**Duplicate detection is byte-exact.** The content hash catches the same file uploaded twice
+under different names, which is the common and expensive case. It does not catch the same
+report re-exported from Word, scanned again, or saved with a different PDF producer — those are
+different bytes and are indexed as separate documents.
 
 **Presigned URLs are bearer capabilities.** Anyone holding the link can fetch the file until it
 expires, with no further authorization. `PRESIGNED_URL_TTL_SECONDS` (default 900) is the only
