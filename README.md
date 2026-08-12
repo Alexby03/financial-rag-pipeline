@@ -43,13 +43,36 @@ Chat UI: http://localhost:8501
 | POST | `/query` | RAG query with tenant and optional filters |
 | GET | `/sources/url` | Presigned MinIO URL for a chunk's source file |
 
+## Reranking (Cohere Rerank on Azure AI Foundry)
+
+Vector search alone ranks by embedding similarity, which buries chunks whose wording differs
+from the question. When configured, the query path retrieves
+`top_k * RERANK_CANDIDATE_MULTIPLIER` candidates from Qdrant, sends them to Cohere Rerank, and
+keeps the `top_k` best.
+
+Reranking is off until both `COHERE_API_BASE` and `COHERE_API_KEY` are set, so the app runs
+unchanged without a deployment. When the endpoint is unreachable, unauthorized, or returns an
+unexpected payload, the query falls back to the vector order and the reason is reported in the
+retrieval trace instead of failing the request.
+
+`COHERE_API_BASE` must include the version segment, since the reranker posts to
+`{COHERE_API_BASE}/rerank`:
+
+| Deployment type | Base URL |
+|-----------------|----------|
+| Serverless endpoint | `https://<name>.<region>.models.ai.azure.com/v1` |
+| Foundry project endpoint | `https://<project>.services.ai.azure.com/providers/cohere/v2` |
+
+For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exactly
+(e.g. `Cohere-rerank-v4.0-pro`), otherwise the endpoint returns a 500.
+
 ## Frontend
 
 `streamlit_app.py` is a Streamlit chat UI that talks to the API over HTTP.
 
 - **Agent transparency**: every answer carries a retrieval trace showing the Qdrant filters,
-  each hit with its similarity score, how many neighbouring chunks were pulled in through the
-  double-linked list, and the reasoning summary from the answer model.
+  each hit with its similarity score and rerank score, how many neighbouring chunks were pulled
+  in through the double-linked list, and the reasoning summary from the answer model.
 - **Clickable sources**: each source resolves through `/sources/url` to a presigned MinIO URL.
   PDFs and images open inline in a new tab, spreadsheets and other formats download. The bytes
   go straight from MinIO to the browser rather than being proxied through the API.
