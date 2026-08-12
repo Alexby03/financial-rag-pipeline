@@ -123,4 +123,6 @@ ruff check .
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) and [docs/rag_strategy.md](docs/rag_strategy.md).
+See [docs/architecture.md](docs/architecture.md) for the stack,
+[docs/ingestion_pipeline.md](docs/ingestion_pipeline.md) for how documents become searchable,
+and [docs/rag_strategy.md](docs/rag_strategy.md) for how they are retrieved.
