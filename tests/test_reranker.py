@@ -2,11 +2,31 @@ from typing import Any
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from app.config import Settings
-from app.services.reranker import CohereReranker
+from app.services.reranker import CohereReranker, build_rerank_url
 
 DOCUMENTS = ["chunk a", "chunk b", "chunk c"]
+
+FOUNDRY_PROJECT = "https://project.services.ai.azure.com/providers/cohere"
+SERVERLESS = "https://deployment.eastus.models.ai.azure.com"
+
+
+@pytest.mark.parametrize(
+    ("api_base", "expected"),
+    [
+        (f"{SERVERLESS}/v1", f"{SERVERLESS}/v1/rerank"),
+        (f"{SERVERLESS}/v1/", f"{SERVERLESS}/v1/rerank"),
+        (f"{SERVERLESS}/v1/rerank", f"{SERVERLESS}/v1/rerank"),
+        (f"{FOUNDRY_PROJECT}/v2/rerank", f"{FOUNDRY_PROJECT}/v2/rerank"),
+        (f"{FOUNDRY_PROJECT}/v2", f"{FOUNDRY_PROJECT}/v2/rerank"),
+        (FOUNDRY_PROJECT, f"{FOUNDRY_PROJECT}/v2/rerank"),
+        (f"{FOUNDRY_PROJECT}/", f"{FOUNDRY_PROJECT}/v2/rerank"),
+    ],
+)
+def test_endpoint_url_is_built_for_every_foundry_shape(api_base: str, expected: str) -> None:
+    assert build_rerank_url(api_base) == expected
 
 
 def build_reranker() -> CohereReranker:

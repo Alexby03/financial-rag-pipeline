@@ -12,9 +12,19 @@ from app.config import Settings
 from app.models.rerank import RerankedDocument, RerankOutcome
 
 
+def build_rerank_url(api_base: str) -> str:
+    """Foundry hands out several base URL shapes depending on the deployment type."""
+    base = api_base.rstrip("/")
+    if base.endswith("/rerank"):
+        return base
+    if base.endswith("/providers/cohere"):
+        return f"{base}/v2/rerank"
+    return f"{base}/rerank"
+
+
 class CohereReranker:
     def __init__(self, settings: Settings) -> None:
-        self._url = f"{settings.cohere_api_base.rstrip('/')}/rerank"
+        self._url = build_rerank_url(settings.cohere_api_base)
         self._api_key = settings.cohere_api_key
         self._model = settings.cohere_rerank_model
         self._timeout = settings.rerank_timeout_seconds

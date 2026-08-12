@@ -55,13 +55,16 @@ unchanged without a deployment. When the endpoint is unreachable, unauthorized, 
 unexpected payload, the query falls back to the vector order and the reason is reported in the
 retrieval trace instead of failing the request.
 
-`COHERE_API_BASE` must include the version segment, since the reranker posts to
-`{COHERE_API_BASE}/rerank`:
+`COHERE_API_BASE` accepts any of the shapes Foundry hands out, with or without the trailing
+`/rerank`:
 
 | Deployment type | Base URL |
 |-----------------|----------|
 | Serverless endpoint | `https://<name>.<region>.models.ai.azure.com/v1` |
-| Foundry project endpoint | `https://<project>.services.ai.azure.com/providers/cohere/v2` |
+| Foundry project endpoint | `https://<project>.services.ai.azure.com/providers/cohere` |
+
+A base ending in `/providers/cohere` resolves to `/v2/rerank`; anything else gets `/rerank`
+appended unless it already ends there.
 
 For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exactly
 (e.g. `Cohere-rerank-v4.0-pro`), otherwise the endpoint returns a 500.
