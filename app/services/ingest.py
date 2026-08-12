@@ -37,9 +37,13 @@ class IngestService:
         parsed = self._parser.parse(file_bytes, filename, metadata.doc_type)
 
         if parsed.content_format == "json":
-            text_chunks = self._chunker.split_json(parsed.text)
+            text_chunks = [
+                chunk
+                for page in parsed.pages
+                for chunk in self._chunker.split_json(page.text, page.page_number)
+            ]
         else:
-            text_chunks = self._chunker.split_markdown(parsed.text)
+            text_chunks = self._chunker.split_pages(parsed.pages)
 
         payloads = self._chunker.build_payloads(text_chunks, metadata, filename, object_key)
 

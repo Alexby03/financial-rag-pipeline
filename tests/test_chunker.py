@@ -4,6 +4,7 @@ from app.config import Settings
 from app.models.api import IngestMetadata
 from app.models.enums import Category, DocType
 from app.models.metadata import ChunkMetadata, QdrantPayload
+from app.models.parsed import ParsedPage
 from app.services.chunker import Chunker
 from app.services.rag import RagService
 
@@ -71,6 +72,23 @@ def test_headings_are_merged_into_content_chunks() -> None:
     assert "```" not in chunks[0].text
     assert chunks[0].text.startswith("Kvartalsrapport Q3 2024 > 2. Finansiell översikt")
     assert "| Nettoomsättning | 150,0 |" in chunks[0].text
+
+
+def test_chunks_keep_their_page_and_inherit_headings_across_pages() -> None:
+    settings = Settings(openai_api_key="test-key")
+    chunker = Chunker(settings=settings)
+    pages = [
+        ParsedPage(text="# Kvartalsrapport Q3 2024\n\n## 2. Finansiell översikt", page_number=1),
+        ParsedPage(
+            text=("| Nyckeltal | Värde (MSEK) |\n| --- | --- |\n| Nettoomsättning | 150,0 |"),
+            page_number=2,
+        ),
+    ]
+    chunks = chunker.split_pages(pages)
+
+    assert len(chunks) == 1
+    assert chunks[0].page_number == 2
+    assert chunks[0].text.startswith("Kvartalsrapport Q3 2024 > 2. Finansiell översikt")
 
 
 def test_qdrant_payload_roundtrip() -> None:

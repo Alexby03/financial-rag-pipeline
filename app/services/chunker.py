@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from app.config import Settings
 from app.models.api import IngestMetadata
 from app.models.metadata import ChunkMetadata, QdrantPayload
+from app.models.parsed import ParsedPage
 
 _FENCE_PATTERN = re.compile(r"^```[a-zA-Z0-9_-]*\s*(.*?)\s*```$", re.DOTALL)
 
@@ -28,13 +29,31 @@ class Chunker:
         self._chunk_size = settings.chunk_size
         self._chunk_overlap = settings.chunk_overlap
 
-    def split_markdown(self, markdown: str, page_number: int = 1) -> list[TextChunk]:
-        normalized = strip_code_fence(markdown)
-        if not normalized:
-            return []
-
+    def split_pages(self, pages: list[ParsedPage]) -> list[TextChunk]:
+        """Chunk a document page by page, carrying headings across page breaks."""
         chunks: list[TextChunk] = []
         headings: dict[int, str] = {}
+        for page in pages:
+            page_chunks, headings = self._split_page(page.text, page.page_number, headings)
+            chunks.extend(page_chunks)
+        return chunks
+
+    def split_markdown(self, markdown: str, page_number: int = 1) -> list[TextChunk]:
+        chunks, _ = self._split_page(markdown, page_number, {})
+        return chunks
+
+    def _split_page(
+        self,
+        markdown: str,
+        page_number: int,
+        inherited_headings: dict[int, str],
+    ) -> tuple[list[TextChunk], dict[int, str]]:
+        normalized = strip_code_fence(markdown)
+        if not normalized:
+            return [], inherited_headings
+
+        chunks: list[TextChunk] = []
+        headings = dict(inherited_headings)
         pending: list[str] = []
 
         for block in self._split_markdown_blocks(normalized):
@@ -60,7 +79,7 @@ class Chunker:
             pending.append(block)
 
         chunks.extend(self._flush(pending, headings, page_number))
-        return chunks
+        return chunks, headings
 
     def split_json(self, json_text: str, page_number: int = 1) -> list[TextChunk]:
         normalized = json_text.strip()

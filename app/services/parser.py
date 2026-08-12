@@ -3,7 +3,7 @@ import json
 import mimetypes
 
 from app.models.enums import DocType
-from app.models.parsed import ParsedContent
+from app.models.parsed import ParsedContent, ParsedPage
 from app.services.chunker import strip_code_fence
 from app.services.openai_client import OpenAIService
 
@@ -37,46 +37,58 @@ class DocumentParser:
         if doc_type == DocType.ORG_CHART:
             return self._parse_org_chart_image(file_bytes, mime_type or "image/png")
 
-        markdown = self._parse_to_markdown(
+        pages = self._parse_to_markdown_pages(
             file_bytes,
             mime_type or "application/octet-stream",
             filename,
             doc_type,
         )
-        return ParsedContent(text=markdown, content_format="markdown")
+        return ParsedContent(pages=pages, content_format="markdown")
 
-    def _parse_to_markdown(
+    def _parse_to_markdown_pages(
         self,
         file_bytes: bytes,
         mime_type: str,
         filename: str,
         doc_type: DocType,
-    ) -> str:
+    ) -> list[ParsedPage]:
         if mime_type.startswith("text/") and doc_type not in FINANCIAL_DOC_TYPES:
-            return file_bytes.decode("utf-8", errors="replace")
+            decoded = file_bytes.decode("utf-8", errors="replace")
+            return [ParsedPage(text=decoded, page_number=1)]
 
-        encoded = base64.b64encode(file_bytes).decode("utf-8")
         if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
-            return self._openai.chat_completion_with_image(
-                MARKDOWN_SYSTEM_PROMPT,
-                MARKDOWN_USER_PROMPT,
-                encoded,
-                "application/pdf",
-            )
+            return self._parse_pdf_pages(file_bytes)
 
         if mime_type.startswith("text/"):
             text = file_bytes.decode("utf-8", errors="replace")
-            return self._openai.chat_completion(
+            markdown = self._openai.chat_completion(
                 MARKDOWN_SYSTEM_PROMPT,
                 f"{MARKDOWN_USER_PROMPT}\n\nDocument:\n{text}",
             )
+            return [ParsedPage(text=markdown, page_number=1)]
 
-        return self._openai.chat_completion_with_image(
+        encoded = base64.b64encode(file_bytes).decode("utf-8")
+        markdown = self._openai.chat_completion_with_image(
             MARKDOWN_SYSTEM_PROMPT,
             MARKDOWN_USER_PROMPT,
             encoded,
             mime_type,
         )
+        return [ParsedPage(text=markdown, page_number=1)]
+
+    def _parse_pdf_pages(self, file_bytes: bytes) -> list[ParsedPage]:
+        """One request per page: the page number is only knowable while the pages are separate."""
+        pages: list[ParsedPage] = []
+        for index, page_png in enumerate(self._openai.pdf_pages_to_png_base64(file_bytes), start=1):
+            markdown = self._openai.chat_completion_with_image(
+                MARKDOWN_SYSTEM_PROMPT,
+                MARKDOWN_USER_PROMPT,
+                page_png,
+                "image/png",
+            )
+            if markdown.strip():
+                pages.append(ParsedPage(text=markdown, page_number=index))
+        return pages
 
     def _parse_org_chart_image(self, file_bytes: bytes, mime_type: str) -> ParsedContent:
         encoded = base64.b64encode(file_bytes).decode("utf-8")
@@ -87,7 +99,10 @@ class DocumentParser:
             mime_type,
         )
         normalized = self._normalize_json(json_text)
-        return ParsedContent(text=normalized, content_format="json")
+        return ParsedContent(
+            pages=[ParsedPage(text=normalized, page_number=1)],
+            content_format="json",
+        )
 
     @staticmethod
     def _normalize_json(raw: str) -> str:
