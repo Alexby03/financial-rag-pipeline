@@ -51,12 +51,28 @@ def render_trace(response: QueryResponse) -> None:
         st.caption(f"Embedding-modell `{trace.embedding_model}`, top_k {trace.top_k}")
         st.write({key: str(value) for key, value in trace.filters.items()})
 
-        st.markdown("**2. Träffar och likhet**")
+        st.markdown("**2. Omrankning**")
+        if trace.rerank is None:
+            st.caption("Avstängd — ordningen kommer direkt från vektorsökningen.")
+        elif trace.rerank.applied:
+            st.caption(
+                f"`{trace.rerank.model}` rankade om {trace.rerank.candidates} kandidater "
+                f"på {trace.rerank.rerank_ms} ms."
+            )
+        else:
+            st.warning(
+                "Omrankningen hoppades över, vektorordningen behölls. "
+                f"{trace.rerank.fallback_reason}"
+            )
+
+        st.markdown("**3. Träffar och likhet**")
         if trace.hits:
             st.dataframe(
                 [
                     {
+                        "Vektorplats": hit.vector_rank,
                         "Score": round(hit.score, 4),
+                        "Rerank": "—" if hit.rerank_score is None else round(hit.rerank_score, 4),
                         "Källa": hit.source_filename,
                         "Sida": hit.page_number,
                         "Utdrag": hit.preview,
@@ -69,7 +85,7 @@ def render_trace(response: QueryResponse) -> None:
         else:
             st.info("Inga chunkar matchade filtren.")
 
-        st.markdown("**3. Grannexpansion**")
+        st.markdown("**4. Grannexpansion**")
         if trace.neighbor_chunk_ids:
             st.caption(
                 f"{len(trace.neighbor_chunk_ids)} angränsande chunkar hämtades via "
@@ -78,7 +94,7 @@ def render_trace(response: QueryResponse) -> None:
         else:
             st.caption("Inga grannar hämtades.")
 
-        st.markdown(f"**4. Svar med `{trace.answer_model}`**")
+        st.markdown(f"**5. Svar med `{trace.answer_model}`**")
         if trace.reasoning_summary:
             st.markdown(trace.reasoning_summary)
         else:
@@ -88,6 +104,8 @@ def render_trace(response: QueryResponse) -> None:
 def render_source(source: SourceChunk, api_url: str, index: int) -> None:
     meta = source.metadata
     score = f"{source.score:.3f}" if source.score is not None else "—"
+    if source.rerank_score is not None:
+        score = f"{score} · rerank {source.rerank_score:.3f}"
     with st.container(border=True):
         header, action = st.columns([4, 1])
         with header:
@@ -150,6 +168,7 @@ with st.sidebar:
     )
     top_k = st.slider("Antal chunkar (top_k)", min_value=1, max_value=20, value=5)
     expand_neighbors = st.checkbox("Hämta angränsande chunkar", value=True)
+    use_rerank = st.checkbox("Ranka om med Cohere Rerank", value=True)
 
     health = check_health(api_url)
     if health is None:
@@ -190,6 +209,7 @@ with chat_tab:
                             "quarter": quarter,
                             "top_k": top_k,
                             "expand_neighbors": expand_neighbors,
+                            "rerank": use_rerank,
                         },
                     )
                 except httpx.HTTPError as error:
