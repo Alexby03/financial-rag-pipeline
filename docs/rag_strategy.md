@@ -1,33 +1,101 @@
-1. Multimodal Parsing:
-    - Text and tables: Use LLamaParse eller gpt-4o to extract financial tables to a Markdown typed file to preserve column structures before chunking.
+# Retrieval strategy
 
-    - Org-schemes (images): convert images to a JSON description through the gpt-4o Vision API. Vectorize the JSON text.
+How a question becomes an answer with citations. The write side is described in
+[ingestion_pipeline.md](ingestion_pipeline.md).
 
-2. Chunking structure:
-    - Double linked list: create a double linked structure through metadata (chunk_id, previous_chunk_id, next_chunk_id) to let the agent retrieve the previous or subsequent context on accord.
+Entry point: `POST /query` → `RagService.query`.
 
-3. Valid enums (validation):
-    - doc_type: (agreement, financial_report, minutes, org_chart, other)
-    - category: (HR, Financing, Legal, Operations, other)
+```
+question → embed → filtered vector search → rerank → neighbour expansion → answer
+```
 
-4. Qdrant Payload Schema (Metadata):
-    - every vector point must contain the follow structure in its payload to enable the necessary filtering:
+Each step is recorded in a `RetrievalTrace` returned with the answer, so the UI can show what
+the agent actually did rather than asserting that it worked.
 
-    {
-        "raw_text": "...the actual text chunk...", // Necessary to generate the actual answer
-        "metadata": {
-            "tenant_id": "default_tenant_test_corp_123", // String
-            "company_name": "SME Corp AB", // String
-            "doc_type": "financial_report", // Enum
-            "category": "Financing", // Enum
-            "year": 2024, // Integer
-            "quarter": 3, // Integer (1-4) or null
-            "source_filename": "q3_report_2024.pdf", // String
-            "page_number": 14, // Integer
-            "chunk_id": "uuid123", // String (Unique)
-            "previous_chunk_id": "uuid122", // String or null
-            "next_chunk_id": "uuid124", // String or null
-            "language": "sv", // String
-            "processed_timestamp": "2026-08-09T14:30:00Z" // DateTime (ISO 8601)
-        }
-    }
+## 1. Embed the question
+
+The question is embedded with the same model used at ingest, `text-embedding-3-small`. Query and
+documents must share an embedding space, so changing the model requires re-embedding every
+chunk.
+
+## 2. Filtered vector search
+
+Qdrant is queried with a `must` filter on `metadata.tenant_id`, plus any of `doc_type`,
+`category`, `year` and `quarter` supplied in the request. Tenant isolation is enforced here, at
+the database, not in application code after the fact.
+
+The number of candidates fetched is **not** `top_k`. When reranking is active it is
+`top_k * RERANK_CANDIDATE_MULTIPLIER`, because the reranker can only choose from what vector
+search hands it. Raising `top_k` alone does not widen the pool.
+
+Note that `client.search()` was removed in qdrant-client 1.16; the current call is
+`client.query_points()`, whose results live on `response.points`.
+
+## 3. Reranking (Cohere Rerank on Azure AI Foundry)
+
+Embedding similarity ranks by how alike two texts look, which buries chunks whose wording
+differs from the question even when they hold the answer. The reranker scores each candidate
+against the question directly and keeps the best `top_k`.
+
+Observed on the Q3 report: the financial table sat at cosine similarity 0.638 while a prose
+paragraph about liquidity scored higher; the reranker gave the table 0.952 and moved it to
+first place, dropping the chunk that vector search had ranked second.
+
+Reranking is optional at three levels:
+
+1. It is inactive unless both `COHERE_API_BASE` and `COHERE_API_KEY` are set.
+2. `QueryRequest.rerank` turns it off per query.
+3. Any failure falls back to vector order rather than failing the request.
+
+The fallback is deliberate but silent by design, so a misconfiguration looks like a working
+system. The reason is always reported in `trace.rerank.fallback_reason` and rendered as a
+warning in the UI — that is where to look first when results feel unchanged.
+
+Two operational traps are worth repeating:
+
+- **The model name must match the deployment name exactly** on project endpoints. Otherwise the
+  endpoint answers 404 `DeploymentNotFound` even though the URL and key are correct.
+- **The base URL comes in several shapes** and the Foundry portal displays the wrong one for
+  Cohere deployments. `build_rerank_url` normalizes them: a base already ending in `/rerank` is
+  used as is, one ending in `/providers/cohere` gets `/v2/rerank`, anything else gets `/rerank`.
+
+`score` (cosine similarity) and `rerank_score` (Cohere relevance) are on different scales and
+must not be compared or thresholded against each other. Both are exposed separately for exactly
+that reason.
+
+## 4. Neighbour expansion
+
+Chunks form a double-linked list within each document. When `expand_neighbors` is set, the
+`previous_chunk_id` and `next_chunk_id` of every selected chunk are fetched and merged into the
+context, then ordered back into reading order per source file.
+
+This runs *after* reranking, so neighbours are fetched for the chunks that were actually
+selected rather than for candidates that were about to be discarded.
+
+## 5. Generation
+
+Context is formatted with a header line per chunk carrying the source filename, page number and
+link ids, so the model can both cite sources and tell when a chunk continues elsewhere.
+
+Answers are generated by a reasoning model (`OPENAI_ANSWER_MODEL`) through the Responses API
+with `reasoning={"effort": ..., "summary": ...}`. gpt-4o remains in use for vision during
+ingest, but cannot produce reasoning summaries.
+
+The system prompt restricts the answer to the provided chunks, instructs the model to say when
+context is insufficient, and asks it to cite filenames and page numbers.
+
+Reasoning summaries come back empty for trivial lookups even though the model reasoned
+internally. Treat an empty summary as "no extended reasoning to report", not as an error.
+
+## 6. Sources and transparency
+
+Every answer returns its source chunks with `score`, `rerank_score` and full metadata.
+
+The frontend resolves `metadata.object_key` through `GET /sources/url` into a presigned MinIO
+URL, so the browser fetches the original file directly from storage instead of proxying bytes
+through the API. PDFs and images are served `inline` and open in a new tab; other formats are
+served `attachment` and download. The endpoint rejects any object key that does not begin with
+the requesting tenant's id.
+
+The trace carries the filters applied, each hit with its vector rank and both scores, the
+rerank outcome, the neighbour chunk ids, context size, timings, and the reasoning summary.

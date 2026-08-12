@@ -43,13 +43,39 @@ Chat UI: http://localhost:8501
 | POST | `/query` | RAG query with tenant and optional filters |
 | GET | `/sources/url` | Presigned MinIO URL for a chunk's source file |
 
+## Reranking (Cohere Rerank on Azure AI Foundry)
+
+Vector search alone ranks by embedding similarity, which buries chunks whose wording differs
+from the question. When configured, the query path retrieves
+`top_k * RERANK_CANDIDATE_MULTIPLIER` candidates from Qdrant, sends them to Cohere Rerank, and
+keeps the `top_k` best.
+
+Reranking is off until both `COHERE_API_BASE` and `COHERE_API_KEY` are set, so the app runs
+unchanged without a deployment. When the endpoint is unreachable, unauthorized, or returns an
+unexpected payload, the query falls back to the vector order and the reason is reported in the
+retrieval trace instead of failing the request.
+
+`COHERE_API_BASE` accepts any of the shapes Foundry hands out, with or without the trailing
+`/rerank`:
+
+| Deployment type | Base URL |
+|-----------------|----------|
+| Serverless endpoint | `https://<name>.<region>.models.ai.azure.com/v1` |
+| Foundry project endpoint | `https://<project>.services.ai.azure.com/providers/cohere` |
+
+A base ending in `/providers/cohere` resolves to `/v2/rerank`; anything else gets `/rerank`
+appended unless it already ends there.
+
+For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exactly
+(e.g. `Cohere-rerank-v4.0-pro`), otherwise the endpoint returns a 500.
+
 ## Frontend
 
 `streamlit_app.py` is a Streamlit chat UI that talks to the API over HTTP.
 
 - **Agent transparency**: every answer carries a retrieval trace showing the Qdrant filters,
-  each hit with its similarity score, how many neighbouring chunks were pulled in through the
-  double-linked list, and the reasoning summary from the answer model.
+  each hit with its similarity score and rerank score, how many neighbouring chunks were pulled
+  in through the double-linked list, and the reasoning summary from the answer model.
 - **Clickable sources**: each source resolves through `/sources/url` to a presigned MinIO URL.
   PDFs and images open inline in a new tab, spreadsheets and other formats download. The bytes
   go straight from MinIO to the browser rather than being proxied through the API.
@@ -95,6 +121,12 @@ pytest
 ruff check .
 ```
 
+The suite needs neither the Docker services nor a valid API key — external services are faked
+and all HTTP is mocked, including the Streamlit test that renders the app end to end.
+
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) and [docs/rag_strategy.md](docs/rag_strategy.md).
+See [docs/architecture.md](docs/architecture.md) for the stack,
+[docs/ingestion_pipeline.md](docs/ingestion_pipeline.md) for how documents become searchable,
+[docs/rag_strategy.md](docs/rag_strategy.md) for how they are retrieved, and
+[docs/operations.md](docs/operations.md) for known failure modes and limitations.
