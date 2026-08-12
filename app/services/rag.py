@@ -1,11 +1,13 @@
 """RAG query path — see docs/rag_strategy.md for linked-chunk retrieval rules."""
 
+from dataclasses import dataclass
 from time import perf_counter
 
 from app.config import Settings
 from app.models.api import (
     QueryRequest,
     QueryResponse,
+    RerankTrace,
     RetrievalTrace,
     RetrievedChunkTrace,
     SourceChunk,
@@ -14,8 +16,17 @@ from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
 from app.services.openai_client import OpenAIService
 from app.services.qdrant_service import QdrantService
+from app.services.reranker import CohereReranker
 
 PREVIEW_LENGTH = 160
+
+
+@dataclass
+class Candidate:
+    payload: QdrantPayload
+    vector_score: float
+    vector_rank: int
+    rerank_score: float | None = None
 
 RAG_SYSTEM_PROMPT = """You are an Financial analyst assistant.
 Answer using only the provided raw_text context chunks.
@@ -34,26 +45,37 @@ class RagService:
         qdrant: QdrantService,
         openai_service: OpenAIService,
         settings: Settings,
+        reranker: CohereReranker | None = None,
     ) -> None:
         self._embedder = embedder
         self._qdrant = qdrant
         self._openai = openai_service
         self._settings = settings
+        self._reranker = reranker
 
     def query(self, request: QueryRequest) -> QueryResponse:
         retrieval_started = perf_counter()
+        reranker = self._reranker if request.rerank else None
+
         query_vector = self._embedder.embed_query(request.question)
         hits = self._qdrant.search(
             query_vector=query_vector,
             tenant_id=request.tenant_id,
-            limit=request.top_k,
+            limit=self._candidate_limit(request.top_k, reranker),
             doc_type=request.doc_type.value if request.doc_type else None,
             category=request.category.value if request.category else None,
             year=request.year,
             quarter=request.quarter,
         )
+        candidates = [
+            Candidate(payload=payload, vector_score=score, vector_rank=rank)
+            for rank, (payload, score) in enumerate(hits, start=1)
+        ]
 
-        context_payloads = self._resolve_context(hits, request.expand_neighbors)
+        selected, rerank_trace = self._apply_rerank(request, candidates, reranker)
+        context_payloads = self._resolve_context(
+            [candidate.payload for candidate in selected], request.expand_neighbors
+        )
         retrieval_ms = self._elapsed_ms(retrieval_started)
 
         context_text = self._format_context(context_payloads)
@@ -65,29 +87,74 @@ class RagService:
         generation_ms = self._elapsed_ms(generation_started)
 
         sources = [
-            SourceChunk(raw_text=payload.raw_text, metadata=payload.metadata, score=score)
-            for payload, score in hits
+            SourceChunk(
+                raw_text=candidate.payload.raw_text,
+                metadata=candidate.payload.metadata,
+                score=candidate.vector_score,
+                rerank_score=candidate.rerank_score,
+            )
+            for candidate in selected
         ]
         trace = self._build_trace(
             request=request,
-            hits=hits,
+            selected=selected,
             context_payloads=context_payloads,
             retrieval_ms=retrieval_ms,
             generation_ms=generation_ms,
             reasoning_summary=reasoned.reasoning_summary,
+            rerank_trace=rerank_trace,
         )
         return QueryResponse(answer=reasoned.answer, sources=sources, trace=trace)
+
+    def _candidate_limit(self, top_k: int, reranker: CohereReranker | None) -> int:
+        if reranker is None:
+            return top_k
+        return top_k * self._settings.rerank_candidate_multiplier
+
+    def _apply_rerank(
+        self,
+        request: QueryRequest,
+        candidates: list[Candidate],
+        reranker: CohereReranker | None,
+    ) -> tuple[list[Candidate], RerankTrace | None]:
+        if reranker is None:
+            return candidates[: request.top_k], None
+
+        rerank_started = perf_counter()
+        outcome = reranker.rerank(
+            query=request.question,
+            documents=[candidate.payload.raw_text for candidate in candidates],
+            top_n=request.top_k,
+        )
+        trace = RerankTrace(
+            model=reranker.model,
+            candidates=len(candidates),
+            applied=outcome.applied,
+            fallback_reason=outcome.fallback_reason,
+            rerank_ms=self._elapsed_ms(rerank_started),
+        )
+
+        if not outcome.applied:
+            return candidates[: request.top_k], trace
+
+        reordered: list[Candidate] = []
+        for document in outcome.documents:
+            candidate = candidates[document.index]
+            candidate.rerank_score = document.relevance_score
+            reordered.append(candidate)
+        return reordered[: request.top_k], trace
 
     def _build_trace(
         self,
         request: QueryRequest,
-        hits: list[tuple[QdrantPayload, float]],
+        selected: list[Candidate],
         context_payloads: list[QdrantPayload],
         retrieval_ms: int,
         generation_ms: int,
         reasoning_summary: str,
+        rerank_trace: RerankTrace | None,
     ) -> RetrievalTrace:
-        hit_ids = {payload.metadata.chunk_id for payload, _ in hits}
+        hit_ids = {candidate.payload.metadata.chunk_id for candidate in selected}
         filters: dict[str, str | int] = {"tenant_id": request.tenant_id}
         if request.doc_type:
             filters["doc_type"] = request.doc_type.value
@@ -105,13 +172,15 @@ class RagService:
             top_k=request.top_k,
             hits=[
                 RetrievedChunkTrace(
-                    chunk_id=payload.metadata.chunk_id,
-                    source_filename=payload.metadata.source_filename,
-                    page_number=payload.metadata.page_number,
-                    score=score,
-                    preview=self._preview(payload.raw_text),
+                    chunk_id=candidate.payload.metadata.chunk_id,
+                    source_filename=candidate.payload.metadata.source_filename,
+                    page_number=candidate.payload.metadata.page_number,
+                    score=candidate.vector_score,
+                    preview=self._preview(candidate.payload.raw_text),
+                    vector_rank=candidate.vector_rank,
+                    rerank_score=candidate.rerank_score,
                 )
-                for payload, score in hits
+                for candidate in selected
             ],
             neighbor_chunk_ids=[
                 payload.metadata.chunk_id
@@ -122,6 +191,7 @@ class RagService:
             retrieval_ms=retrieval_ms,
             generation_ms=generation_ms,
             reasoning_summary=reasoning_summary,
+            rerank=rerank_trace,
         )
 
     @staticmethod
@@ -137,13 +207,12 @@ class RagService:
 
     def _resolve_context(
         self,
-        hits: list[tuple[QdrantPayload, float]],
+        hit_payloads: list[QdrantPayload],
         expand_neighbors: bool,
     ) -> list[QdrantPayload]:
-        if not hits:
+        if not hit_payloads:
             return []
 
-        hit_payloads = [payload for payload, _ in hits]
         if not expand_neighbors:
             return hit_payloads
 

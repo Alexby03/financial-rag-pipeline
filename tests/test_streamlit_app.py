@@ -48,6 +48,7 @@ QUERY_RESPONSE = QueryResponse(
                 page_number=1,
                 score=0.82,
                 preview="Nettoomsattning 150,0",
+                vector_rank=1,
             )
         ],
         neighbor_chunk_ids=["c2"],
