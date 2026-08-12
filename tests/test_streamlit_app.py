@@ -6,7 +6,13 @@ from unittest.mock import patch
 import httpx
 from streamlit.testing.v1 import AppTest
 
-from app.models.api import QueryResponse, RetrievalTrace, RetrievedChunkTrace, SourceChunk
+from app.models.api import (
+    QueryResponse,
+    RerankTrace,
+    RetrievalTrace,
+    RetrievedChunkTrace,
+    SourceChunk,
+)
 from app.models.enums import Category, DocType
 from app.models.metadata import ChunkMetadata
 
@@ -34,6 +40,7 @@ QUERY_RESPONSE = QueryResponse(
                 processed_timestamp=datetime.now(UTC),
             ),
             score=0.82,
+            rerank_score=0.95,
         )
     ],
     trace=RetrievalTrace(
@@ -48,6 +55,8 @@ QUERY_RESPONSE = QueryResponse(
                 page_number=1,
                 score=0.82,
                 preview="Nettoomsattning 150,0",
+                vector_rank=3,
+                rerank_score=0.95,
             )
         ],
         neighbor_chunk_ids=["c2"],
@@ -55,6 +64,12 @@ QUERY_RESPONSE = QueryResponse(
         retrieval_ms=120,
         generation_ms=2400,
         reasoning_summary="Jag letade upp tabellen i den finansiella oversikten.",
+        rerank=RerankTrace(
+            model="rerank-multilingual-v3.0",
+            candidates=20,
+            applied=True,
+            rerank_ms=180,
+        ),
     ),
 )
 
@@ -91,5 +106,29 @@ def test_chat_renders_answer_trace_and_source_link() -> None:
         rendered = " ".join(element.value for element in app.markdown)
         assert "Nettoomsattningen var 150,0 MSEK." in rendered
         assert "Jag letade upp tabellen" in rendered
+        captions = " ".join(element.value for element in app.caption)
+        assert "rankade om 20 kandidater" in captions
+        assert "rerank 0.950" in captions
         links = list(app.get("link_button"))
         assert links and links[0].proto.url == SOURCE_URL_RESPONSE["url"]
+
+
+def test_rerank_fallback_is_surfaced_as_a_warning() -> None:
+    degraded = QUERY_RESPONSE.model_copy(deep=True)
+    assert degraded.trace.rerank is not None
+    degraded.trace.rerank.applied = False
+    degraded.trace.rerank.fallback_reason = "Rerank endpoint returned 401"
+
+    def degraded_post(url: str, **kwargs: Any) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json=degraded.model_dump(mode="json"), request=request)
+
+    with patch("httpx.get", side_effect=fake_get), patch("httpx.post", side_effect=degraded_post):
+        app = AppTest.from_file(APP_PATH, default_timeout=30)
+        app.run()
+        app.chat_input[0].set_value("Vad var nettoomsattningen i Q3?").run()
+        assert not app.exception
+
+        warnings = " ".join(element.value for element in app.warning)
+        assert "vektorordningen behölls" in warnings
+        assert "401" in warnings

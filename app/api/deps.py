@@ -9,6 +9,7 @@ from app.services.openai_client import OpenAIService
 from app.services.parser import DocumentParser
 from app.services.qdrant_service import QdrantService
 from app.services.rag import RagService
+from app.services.reranker import CohereReranker
 
 
 @lru_cache
@@ -53,12 +54,19 @@ def get_ingest_service() -> IngestService:
 
 
 @lru_cache
+def get_reranker() -> CohereReranker | None:
+    settings = get_settings()
+    return CohereReranker(settings) if settings.rerank_configured else None
+
+
+@lru_cache
 def get_rag_service() -> RagService:
     return RagService(
         embedder=get_embedder(),
         qdrant=get_qdrant_service(),
         openai_service=get_openai_service(),
         settings=get_settings(),
+        reranker=get_reranker(),
     )
 
 

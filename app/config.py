@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,13 @@ class Settings(BaseSettings):
     openai_answer_model: str = "gpt-5-mini"
     openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] = "medium"
     openai_reasoning_summary: Literal["auto", "concise", "detailed"] = "auto"
+
+    # Cohere Rerank on Azure AI Foundry. Reranking stays off until both values are set.
+    cohere_api_base: str = ""
+    cohere_api_key: str = ""
+    cohere_rerank_model: str = "rerank-multilingual-v3.0"
+    rerank_candidate_multiplier: int = Field(default=4, ge=1, le=10)
+    rerank_timeout_seconds: float = 10.0
 
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
@@ -35,6 +43,10 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 100
     embedding_dimensions: int = 1536
+
+    @property
+    def rerank_configured(self) -> bool:
+        return bool(self.cohere_api_base and self.cohere_api_key)
 
 
 @lru_cache

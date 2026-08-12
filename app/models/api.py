@@ -32,12 +32,14 @@ class QueryRequest(BaseModel):
     quarter: int | None = Field(default=None, ge=1, le=4)
     top_k: int = Field(default=5, ge=1, le=20)
     expand_neighbors: bool = False
+    rerank: bool = True
 
 
 class SourceChunk(BaseModel):
     raw_text: str
     metadata: ChunkMetadata
     score: float | None = None
+    rerank_score: float | None = None
 
 
 class RetrievedChunkTrace(BaseModel):
@@ -46,6 +48,16 @@ class RetrievedChunkTrace(BaseModel):
     page_number: int
     score: float
     preview: str
+    vector_rank: int
+    rerank_score: float | None = None
+
+
+class RerankTrace(BaseModel):
+    model: str
+    candidates: int
+    applied: bool
+    fallback_reason: str = ""
+    rerank_ms: int = 0
 
 
 class RetrievalTrace(BaseModel):
@@ -61,6 +73,7 @@ class RetrievalTrace(BaseModel):
     retrieval_ms: int = 0
     generation_ms: int = 0
     reasoning_summary: str = ""
+    rerank: RerankTrace | None = None
 
 
 class QueryResponse(BaseModel):
