@@ -5,16 +5,19 @@ import mimetypes
 from app.models.enums import DocType
 from app.models.parsed import ParsedContent, ParsedPage
 from app.services.chunker import strip_code_fence
+from app.services.heading_normalizer import normalize_page_markdown
 from app.services.openai_client import OpenAIService
 
 MARKDOWN_SYSTEM_PROMPT = """You extract content from Financial documents.
 Return structured Markdown that preserves headings, paragraphs, and tables.
+Use # only for the document title (typically on page 1). Numbered sections follow outline depth:
+1. and 2. are ##, 2.1 and 2.2 are ###, 2.1.1 is ####.
 Financial tables MUST use Markdown table syntax with correct columns and rows.
 Signature pages are ordinary content: transcribe the printed text around them and write
 [signatur] where a handwritten signature appears, without naming or identifying the signatory.
 Do not summarize — extract faithfully."""
 
-MARKDOWN_USER_PROMPT = """Extract all text and tables from this document.
+MARKDOWN_USER_PROMPT = """Extract all text and tables from this page.
 Output Markdown only."""
 
 ORG_CHART_SYSTEM_PROMPT = """You describe organizational charts for retrieval.
@@ -71,6 +74,15 @@ class DocumentParser:
         )
         return ParsedContent(pages=pages, content_format="markdown")
 
+    @staticmethod
+    def _page_user_prompt(page_number: int, page_count: int) -> str:
+        return (
+            f"{MARKDOWN_USER_PROMPT}\n\n"
+            f"This is page {page_number} of {page_count}. "
+            "Continue the document's outline: use # only for the title on page 1; "
+            "numbered sections like 2.1 are ###, top-level sections like 3. are ##."
+        )
+
     def _parse_to_markdown_pages(
         self,
         file_bytes: bytes,
@@ -91,7 +103,7 @@ class DocumentParser:
                 MARKDOWN_SYSTEM_PROMPT,
                 f"{MARKDOWN_USER_PROMPT}\n\nDocument:\n{text}",
             )
-            return [ParsedPage(text=markdown, page_number=1)]
+            return [ParsedPage(text=normalize_page_markdown(markdown), page_number=1)]
 
         encoded = base64.b64encode(file_bytes).decode("utf-8")
         markdown = self._openai.chat_completion_with_image(
@@ -102,20 +114,27 @@ class DocumentParser:
         )
         if is_refusal(markdown):
             return []
-        return [ParsedPage(text=markdown, page_number=1)]
+        return [ParsedPage(text=normalize_page_markdown(markdown), page_number=1)]
 
     def _parse_pdf_pages(self, file_bytes: bytes) -> list[ParsedPage]:
         """One request per page: the page number is only knowable while the pages are separate."""
+        page_images = self._openai.pdf_pages_to_png_base64(file_bytes)
+        page_count = len(page_images)
         pages: list[ParsedPage] = []
-        for index, page_png in enumerate(self._openai.pdf_pages_to_png_base64(file_bytes), start=1):
+        for index, page_png in enumerate(page_images, start=1):
             markdown = self._openai.chat_completion_with_image(
                 MARKDOWN_SYSTEM_PROMPT,
-                MARKDOWN_USER_PROMPT,
+                self._page_user_prompt(index, page_count),
                 page_png,
                 "image/png",
             )
             if markdown.strip() and not is_refusal(markdown):
-                pages.append(ParsedPage(text=markdown, page_number=index))
+                pages.append(
+                    ParsedPage(
+                        text=normalize_page_markdown(markdown),
+                        page_number=index,
+                    )
+                )
         return pages
 
     def _parse_org_chart_image(self, file_bytes: bytes, mime_type: str) -> ParsedContent:

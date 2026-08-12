@@ -91,6 +91,31 @@ def test_chunks_keep_their_page_and_inherit_headings_across_pages() -> None:
     assert chunks[0].text.startswith("Kvartalsrapport Q3 2024 > 2. Finansiell översikt")
 
 
+def test_section_three_does_not_nest_under_subsection_on_the_next_page() -> None:
+    settings = Settings(openai_api_key="test-key")
+    chunker = Chunker(settings=settings)
+    pages = [
+        ParsedPage(
+            text=(
+                "# Kvartalsrapport Q3 2024\n\n"
+                "## 2. Finansiell översikt\n\n"
+                "### 2.3 Utvalda nyckeltal"
+            ),
+            page_number=3,
+        ),
+        ParsedPage(
+            text="## 3. Analys av finansiering\n\nKapitalstrukturen optimerades under kvartalet.",
+            page_number=4,
+        ),
+    ]
+    chunks = chunker.split_pages(pages)
+
+    assert len(chunks) == 1
+    assert chunks[0].page_number == 4
+    assert chunks[0].text.startswith("Kvartalsrapport Q3 2024 > 3. Analys av finansiering")
+    assert "2.3" not in chunks[0].text.split("\n\n", 1)[0]
+
+
 def test_qdrant_payload_roundtrip() -> None:
     metadata = ChunkMetadata(
         tenant_id="tenant_1",

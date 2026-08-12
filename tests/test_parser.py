@@ -8,6 +8,7 @@ class FakeOpenAI:
     def __init__(self, page_markdowns: list[str]) -> None:
         self._page_markdowns = page_markdowns
         self.parsed_images: list[str] = []
+        self.user_prompts: list[str] = []
 
     def pdf_pages_to_png_base64(self, pdf_bytes: bytes, dpi: int = 150) -> list[str]:
         return [f"page-{index}" for index in range(1, len(self._page_markdowns) + 1)]
@@ -20,6 +21,7 @@ class FakeOpenAI:
         mime_type: str,
     ) -> str:
         self.parsed_images.append(image_base64)
+        self.user_prompts.append(user_prompt)
         return self._page_markdowns[len(self.parsed_images) - 1]
 
 
@@ -68,6 +70,26 @@ def test_a_long_page_that_merely_mentions_an_apology_is_kept() -> None:
         "mitigations set out in the sections below."
     )
     assert not is_refusal(apology_letter)
+
+
+def test_pdf_prompts_include_page_position() -> None:
+    openai = FakeOpenAI(["# Titel", "Brödtext", "# Slut"])
+    parser = DocumentParser(openai_service=openai)
+
+    parser.parse(b"%PDF-1.7", "report.pdf", DocType.FINANCIAL_REPORT)
+
+    assert "page 1 of 3" in openai.user_prompts[0]
+    assert "page 2 of 3" in openai.user_prompts[1]
+    assert "Continue the document's outline" in openai.user_prompts[2]
+
+
+def test_numbered_sections_are_normalized_after_parse() -> None:
+    openai = FakeOpenAI(["## 2. Finansiell översikt", "### 3. Analys av finansiering"])
+    parser = DocumentParser(openai_service=openai)
+
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf", DocType.FINANCIAL_REPORT)
+
+    assert parsed.pages[1].text.startswith("## 3. Analys av finansiering")
 
 
 def test_plain_text_is_a_single_page() -> None:

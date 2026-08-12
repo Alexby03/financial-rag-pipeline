@@ -72,6 +72,12 @@ As a backstop, `is_refusal` drops any page whose output is short and apologetic 
 "I'm sorry, I can't help with that." is stored as an ordinary chunk, where it is
 indistinguishable from real content to the embedder and to the reader.
 
+**Heading depth is normalized locally.** Each page is parsed in isolation, so the model often
+mis-guesses `#` depth (`### 3.` under an earlier `2.3`). After parse, `heading_normalizer`
+re-levels numbered sections from the decimal outline (`3.` → `##`, `2.1` → `###`) with no extra
+model calls. The per-page prompt also tells the model to reserve `#` for the title and to treat
+the upload as page N of M. Unnumbered headings are left unchanged.
+
 ## 3. Chunking
 
 `Chunker.split_pages` walks the pages in order and is structure-aware rather than length-driven.
