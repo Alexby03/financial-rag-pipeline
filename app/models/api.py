@@ -5,6 +5,9 @@ from pydantic import BaseModel, Field
 from app.models.enums import Category, DocType
 from app.models.metadata import ChunkMetadata
 
+IngestJobStatus = Literal["queued", "running", "completed", "failed", "duplicate"]
+IngestJobStage = Literal["checking", "uploading", "parsing", "embedding", "indexing"]
+
 
 class IngestMetadata(BaseModel):
     tenant_id: str
@@ -21,6 +24,23 @@ class IngestResponse(BaseModel):
     chunk_count: int
     object_key: str
     status: str = "completed"
+
+
+class IngestJobAccepted(BaseModel):
+    """Immediate reply from POST /ingest — work continues in the lifespan worker."""
+
+    job_id: str
+    status: Literal["queued"] = "queued"
+
+
+class IngestJobStatusResponse(BaseModel):
+    job_id: str
+    status: IngestJobStatus
+    stage: IngestJobStage | None = None
+    document_id: str = ""
+    chunk_count: int = 0
+    object_key: str = ""
+    error: str | None = None
 
 
 class QueryRequest(BaseModel):

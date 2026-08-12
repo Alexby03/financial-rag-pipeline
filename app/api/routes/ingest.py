@@ -1,14 +1,14 @@
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from app.api.deps import get_ingest_service
-from app.models.api import IngestMetadata, IngestResponse
+from app.api.deps import get_ingest_job_manager
+from app.models.api import IngestJobAccepted, IngestJobStatusResponse, IngestMetadata
 from app.models.enums import Category, DocType
-from app.services.ingest import IngestService
+from app.services.ingest_jobs import IngestJobManager
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
-@router.post("", response_model=IngestResponse)
+@router.post("", response_model=IngestJobAccepted, status_code=202)
 async def ingest_document(
     file: UploadFile = File(...),
     tenant_id: str = Form(...),
@@ -18,8 +18,8 @@ async def ingest_document(
     year: int = Form(...),
     quarter: int | None = Form(default=None),
     language: str = Form(default="sv"),
-    ingest_service: IngestService = Depends(get_ingest_service),
-) -> IngestResponse:
+    jobs: IngestJobManager = Depends(get_ingest_job_manager),
+) -> IngestJobAccepted:
     file_bytes = await file.read()
     filename = file.filename or "upload.bin"
     metadata = IngestMetadata(
@@ -31,4 +31,16 @@ async def ingest_document(
         quarter=quarter,
         language=language,
     )
-    return ingest_service.ingest(file_bytes, filename, metadata)
+    job_id = await jobs.enqueue(file_bytes, filename, metadata)
+    return IngestJobAccepted(job_id=job_id)
+
+
+@router.get("/jobs/{job_id}", response_model=IngestJobStatusResponse)
+async def get_ingest_job(
+    job_id: str,
+    jobs: IngestJobManager = Depends(get_ingest_job_manager),
+) -> IngestJobStatusResponse:
+    status = jobs.get_status(job_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Ingest job not found")
+    return status

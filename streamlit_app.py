@@ -1,18 +1,43 @@
 """Streamlit chat UI for the RAG API, exposing what the agent retrieved and why."""
 
 import os
+import time
 
 import httpx
 import streamlit as st
 
-from app.models.api import IngestResponse, QueryResponse, SourceChunk, SourceUrlResponse
+from app.models.api import (
+    IngestJobAccepted,
+    IngestJobStatusResponse,
+    QueryResponse,
+    SourceChunk,
+    SourceUrlResponse,
+)
 from app.models.enums import Category, DocType
 
 DEFAULT_API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
 DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "default_tenant_test_corp_123")
 REQUEST_TIMEOUT = 120.0
+INGEST_POLL_INTERVAL_SECONDS = 1.5
+INGEST_POLL_TIMEOUT_SECONDS = 1800.0
+
+STAGE_LABELS = {
+    "checking": "Kontrollerar dubbletter…",
+    "uploading": "Laddar upp till lagring…",
+    "parsing": "Parsar dokumentet…",
+    "embedding": "Skapar embeddings…",
+    "indexing": "Indexerar i Qdrant…",
+}
 
 st.set_page_config(page_title="Financial RAG", layout="wide")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stToast"] { pointer-events: none; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -149,14 +174,61 @@ def run_query(api_url: str, payload: dict[str, object]) -> QueryResponse:
     return QueryResponse.model_validate(response.json())
 
 
-def upload_document(
+def submit_ingest(
     api_url: str,
     files: dict[str, object],
     data: dict[str, object],
-) -> IngestResponse:
+) -> IngestJobAccepted:
     response = httpx.post(f"{api_url}/ingest", files=files, data=data, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
-    return IngestResponse.model_validate(response.json())
+    return IngestJobAccepted.model_validate(response.json())
+
+
+def fetch_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
+    response = httpx.get(f"{api_url}/ingest/jobs/{job_id}", timeout=30.0)
+    response.raise_for_status()
+    return IngestJobStatusResponse.model_validate(response.json())
+
+
+def toast_ingest_progress(job: IngestJobStatusResponse) -> None:
+    if job.status == "queued":
+        st.toast("Uppladdning köad…", icon="⏳", duration="infinite")
+        return
+    if job.status == "running":
+        label = STAGE_LABELS.get(job.stage or "", "Bearbetar dokumentet…")
+        st.toast(label, icon="⏳", duration="infinite")
+        return
+    if job.status == "completed":
+        st.toast("Dokumentet är uppladdat", icon="✅", duration="infinite")
+        return
+    if job.status == "duplicate":
+        st.toast("Dokumentet fanns redan indexerat", icon="ℹ️", duration="infinite")
+        return
+    st.toast(
+        f"Uppladdningen misslyckades: {job.error or 'okänt fel'}",
+        icon="❌",
+        duration="infinite",
+    )
+
+
+def wait_for_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
+    """Poll until the lifespan worker finishes; toast updates stay non-dismissible via CSS."""
+    deadline = time.monotonic() + INGEST_POLL_TIMEOUT_SECONDS
+    last_key: tuple[str, str | None] | None = None
+    while True:
+        job = fetch_ingest_job(api_url, job_id)
+        key = (job.status, job.stage)
+        if key != last_key:
+            toast_ingest_progress(job)
+            last_key = key
+        if job.status in {"completed", "failed", "duplicate"}:
+            return job
+        if time.monotonic() >= deadline:
+            raise httpx.TimeoutException(
+                f"Ingest job {job_id} still {job.status} after "
+                f"{int(INGEST_POLL_TIMEOUT_SECONDS)}s"
+            )
+        time.sleep(INGEST_POLL_INTERVAL_SECONDS)
 
 
 with st.sidebar:
@@ -249,9 +321,9 @@ with upload_tab:
         if uploaded is None:
             st.warning("Välj en fil först.")
         else:
-            with st.spinner("Parsar och indexerar..."):
+            with st.spinner("Köar uppladdningen..."):
                 try:
-                    result = upload_document(
+                    accepted = submit_ingest(
                         api_url,
                         files={"file": (uploaded.name, uploaded.getvalue(), uploaded.type)},
                         data={
@@ -264,14 +336,18 @@ with upload_tab:
                             "language": language,
                         },
                     )
+                    result = wait_for_ingest_job(api_url, accepted.job_id)
                 except httpx.HTTPError as error:
                     st.error(f"Uppladdningen misslyckades: {error}")
                 else:
-                    if result.status == "duplicate":
+                    if result.status == "failed":
+                        st.error(f"Uppladdningen misslyckades: {result.error or 'okänt fel'}")
+                    elif result.status == "duplicate":
                         st.info(
                             f"Filen är redan indexerad med {result.chunk_count} chunkar. "
                             "Ingen ny parsning gjordes."
                         )
+                        st.caption(f"Objekt: `{result.object_key}`")
                     else:
                         st.success(f"Indexerade {result.chunk_count} chunkar")
-                    st.caption(f"Objekt: `{result.object_key}`")
+                        st.caption(f"Objekt: `{result.object_key}`")

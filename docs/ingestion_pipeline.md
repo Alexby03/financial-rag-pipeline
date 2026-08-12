@@ -3,17 +3,24 @@
 How a document becomes searchable. The retrieval side is described in
 [rag_strategy.md](rag_strategy.md).
 
-Entry point: `POST /ingest` → `IngestService.ingest`.
+Entry point: `POST /ingest` accepts the upload and returns `202` with a `job_id`. A lifespan
+worker drains an in-memory queue and runs `IngestService.ingest` off the event loop. Poll
+`GET /ingest/jobs/{job_id}` for `queued` → `running` → `completed` | `duplicate` | `failed`.
+Duplicate detection still happens inside the worker so batch uploads can share the same path.
 
 ```
-file bytes → hash → MinIO → parse → chunk → link → embed → Qdrant
+file bytes → enqueue → (worker) hash → MinIO → parse → chunk → link → embed → Qdrant
+                └─ 202 job_id
 ```
+
+Jobs are not durable across process restarts; re-upload after a crash. That is an accepted MVP
+trade-off until a real queue is introduced.
 
 ## 1. Identity, then storage
 
-The first thing ingest does is hash the bytes. A sha256 digest of the file is the document's
+The first thing the worker does is hash the bytes. A sha256 digest of the file is the document's
 identity, and it is checked against the index before anything expensive happens: if the same
-tenant already has chunks carrying that hash, ingest returns immediately with
+tenant already has chunks carrying that hash, the job finishes with
 `status="duplicate"`, the existing `object_key` and the existing chunk count. Nothing is
 uploaded, parsed, embedded or written.
 

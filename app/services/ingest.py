@@ -1,12 +1,15 @@
 import hashlib
 import mimetypes
+from collections.abc import Callable
 
-from app.models.api import IngestMetadata, IngestResponse
+from app.models.api import IngestJobStage, IngestMetadata, IngestResponse
 from app.services.chunker import Chunker
 from app.services.embedder import Embedder
 from app.services.minio_client import MinioStorage
 from app.services.parser import DocumentParser
 from app.services.qdrant_service import QdrantService
+
+ProgressCallback = Callable[[IngestJobStage], None]
 
 
 class IngestService:
@@ -29,7 +32,13 @@ class IngestService:
         file_bytes: bytes,
         filename: str,
         metadata: IngestMetadata,
+        on_progress: ProgressCallback | None = None,
     ) -> IngestResponse:
+        def report(stage: IngestJobStage) -> None:
+            if on_progress is not None:
+                on_progress(stage)
+
+        report("checking")
         content_hash = hashlib.sha256(file_bytes).hexdigest()
 
         already_indexed = self._qdrant.find_by_content_hash(metadata.tenant_id, content_hash)
@@ -48,7 +57,10 @@ class IngestService:
         object_key = f"{metadata.tenant_id}/{document_id}/{filename}"
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
+        report("uploading")
         self._storage.upload(object_key, file_bytes, content_type)
+
+        report("parsing")
         parsed = self._parser.parse(file_bytes, filename, metadata.doc_type)
 
         if parsed.content_format == "json":
@@ -66,7 +78,9 @@ class IngestService:
 
         if payloads:
             self._qdrant.delete_by_document(metadata.tenant_id, filename, content_hash)
+            report("embedding")
             vectors = self._embedder.embed_texts([payload.raw_text for payload in payloads])
+            report("indexing")
             self._qdrant.upsert_chunks(vectors, payloads)
 
         return IngestResponse(
