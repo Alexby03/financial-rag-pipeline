@@ -14,6 +14,8 @@ class ChunkMetadata(BaseModel):
     quarter: int | None = Field(default=None, ge=1, le=4)
     source_filename: str
     object_key: str
+    # Optional so chunks stored before content hashing keep validating on read.
+    content_hash: str | None = None
     page_number: int
     chunk_id: str
     previous_chunk_id: str | None

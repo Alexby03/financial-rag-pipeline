@@ -28,6 +28,7 @@ def init_collection() -> None:
         ("metadata.quarter", qmodels.PayloadSchemaType.INTEGER),
         ("metadata.company_name", qmodels.PayloadSchemaType.KEYWORD),
         ("metadata.source_filename", qmodels.PayloadSchemaType.KEYWORD),
+        ("metadata.content_hash", qmodels.PayloadSchemaType.KEYWORD),
     ]
 
     for field_name, field_schema in index_fields:

@@ -115,7 +115,51 @@ class QdrantService:
             payloads.append(QdrantPayload.model_validate(record.payload))
         return payloads
 
-    def delete_by_document(self, tenant_id: str, source_filename: str) -> None:
+    def find_by_content_hash(self, tenant_id: str, content_hash: str) -> list[QdrantPayload]:
+        records, _ = self._client.scroll(
+            collection_name=self._collection,
+            scroll_filter=qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="metadata.tenant_id",
+                        match=qmodels.MatchValue(value=tenant_id),
+                    ),
+                    qmodels.FieldCondition(
+                        key="metadata.content_hash",
+                        match=qmodels.MatchValue(value=content_hash),
+                    ),
+                ]
+            ),
+            limit=10_000,
+            with_payload=True,
+        )
+        return [
+            QdrantPayload.model_validate(record.payload)
+            for record in records
+            if record.payload is not None
+        ]
+
+    def delete_by_document(
+        self,
+        tenant_id: str,
+        source_filename: str,
+        content_hash: str | None = None,
+    ) -> None:
+        """Replaces a document by name and, when known, by content, so a rename is not a new doc."""
+        should: list[qmodels.FieldCondition] = [
+            qmodels.FieldCondition(
+                key="metadata.source_filename",
+                match=qmodels.MatchValue(value=source_filename),
+            )
+        ]
+        if content_hash:
+            should.append(
+                qmodels.FieldCondition(
+                    key="metadata.content_hash",
+                    match=qmodels.MatchValue(value=content_hash),
+                )
+            )
+
         self._client.delete(
             collection_name=self._collection,
             points_selector=qmodels.FilterSelector(
@@ -124,12 +168,9 @@ class QdrantService:
                         qmodels.FieldCondition(
                             key="metadata.tenant_id",
                             match=qmodels.MatchValue(value=tenant_id),
-                        ),
-                        qmodels.FieldCondition(
-                            key="metadata.source_filename",
-                            match=qmodels.MatchValue(value=source_filename),
-                        ),
-                    ]
+                        )
+                    ],
+                    should=should,
                 )
             ),
         )
