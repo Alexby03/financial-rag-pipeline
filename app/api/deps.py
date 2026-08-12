@@ -4,6 +4,7 @@ from app.config import Settings, get_settings
 from app.services.chunker import Chunker
 from app.services.embedder import Embedder
 from app.services.ingest import IngestService
+from app.services.ingest_jobs import IngestJobManager
 from app.services.minio_client import MinioStorage
 from app.services.openai_client import OpenAIService
 from app.services.parser import DocumentParser
@@ -51,6 +52,11 @@ def get_ingest_service() -> IngestService:
         embedder=get_embedder(),
         qdrant=get_qdrant_service(),
     )
+
+
+@lru_cache
+def get_ingest_job_manager() -> IngestJobManager:
+    return IngestJobManager()
 
 
 @lru_cache
