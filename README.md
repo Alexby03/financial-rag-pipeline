@@ -121,8 +121,12 @@ pytest
 ruff check .
 ```
 
+The suite needs neither the Docker services nor a valid API key — external services are faked
+and all HTTP is mocked, including the Streamlit test that renders the app end to end.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the stack,
 [docs/ingestion_pipeline.md](docs/ingestion_pipeline.md) for how documents become searchable,
-and [docs/rag_strategy.md](docs/rag_strategy.md) for how they are retrieved.
+[docs/rag_strategy.md](docs/rag_strategy.md) for how they are retrieved, and
+[docs/operations.md](docs/operations.md) for known failure modes and limitations.

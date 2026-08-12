@@ -42,7 +42,12 @@ reranking switched off.
 `tenant_id` is stored on every chunk and enforced as a Qdrant filter on every query, and object
 keys are prefixed with it so source lookups can be checked before a presigned URL is issued.
 
+The isolation is only as strong as the tenant id it is given, and the API has no authentication
+yet — the id arrives in the request. See [operations.md](operations.md) for that and the other
+known gaps.
+
 ## Documentation
 
 - [ingestion_pipeline.md](ingestion_pipeline.md) — how documents become searchable
 - [rag_strategy.md](rag_strategy.md) — how they are retrieved and answered
+- [operations.md](operations.md) — failure modes, limitations and risks
