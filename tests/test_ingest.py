@@ -110,22 +110,29 @@ def test_new_document_is_parsed_and_stamped_with_its_hash() -> None:
     qdrant = FakeQdrant()
     parser = FakeParser()
     service = build_service(qdrant, parser)
+    stages: list[str] = []
 
-    response = service.ingest(FILE_BYTES, "q3_report_2024.pdf", INGEST_METADATA)
+    response = service.ingest(
+        FILE_BYTES, "q3_report_2024.pdf", INGEST_METADATA, on_progress=stages.append
+    )
 
     assert response.status == "completed"
     assert parser.calls == 1
     assert qdrant.upserted
     assert all(payload.metadata.content_hash == CONTENT_HASH for payload in qdrant.upserted)
     assert qdrant.deletes == [("tenant_1", "q3_report_2024.pdf", CONTENT_HASH)]
+    assert stages == ["checking", "uploading", "parsing", "embedding", "indexing"]
 
 
 def test_identical_bytes_under_a_new_name_are_not_parsed_again() -> None:
     qdrant = FakeQdrant(existing=[existing_chunk("tenant_1/doc-9/@q3_report_2024.pdf")])
     parser = FakeParser()
     service = build_service(qdrant, parser)
+    stages: list[str] = []
 
-    response = service.ingest(FILE_BYTES, "q3_report_2024.pdf", INGEST_METADATA)
+    response = service.ingest(
+        FILE_BYTES, "q3_report_2024.pdf", INGEST_METADATA, on_progress=stages.append
+    )
 
     assert response.status == "duplicate"
     assert response.document_id == "doc-9"
@@ -133,3 +140,4 @@ def test_identical_bytes_under_a_new_name_are_not_parsed_again() -> None:
     assert response.chunk_count == 1
     assert parser.calls == 0
     assert not qdrant.upserted
+    assert stages == ["checking"]
