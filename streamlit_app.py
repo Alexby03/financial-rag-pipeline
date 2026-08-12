@@ -267,5 +267,11 @@ with upload_tab:
                 except httpx.HTTPError as error:
                     st.error(f"Uppladdningen misslyckades: {error}")
                 else:
-                    st.success(f"Indexerade {result.chunk_count} chunkar")
+                    if result.status == "duplicate":
+                        st.info(
+                            f"Filen är redan indexerad med {result.chunk_count} chunkar. "
+                            "Ingen ny parsning gjordes."
+                        )
+                    else:
+                        st.success(f"Indexerade {result.chunk_count} chunkar")
                     st.caption(f"Objekt: `{result.object_key}`")
