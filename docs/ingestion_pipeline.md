@@ -22,7 +22,9 @@ Every document is stored before it is parsed, so the original is never lost if p
 ## 2. Multimodal parsing
 
 `DocumentParser` picks a strategy from the MIME type and `doc_type`. Output is normalized to
-`ParsedContent`, either Markdown or JSON.
+`ParsedContent`: a list of `ParsedPage`, each with its text and its 1-based page number, in
+either Markdown or JSON. Inputs that have no pagination — images, plain text, org charts —
+produce a single page numbered 1.
 
 | Input | Strategy | Output |
 |-------|----------|--------|
@@ -37,17 +39,24 @@ path because their tables need to be reconstructed as Markdown tables rather tha
 whitespace-aligned text.
 
 **PDFs must be rasterized.** The chat completions endpoint rejects `application/pdf` as image
-input and answers 400. `OpenAIService` therefore opens the PDF with PyMuPDF, renders every page
-to PNG at 150 DPI, and attaches one image per page to a single message. Page count drives token
-cost here, so large documents are the expensive case.
+input and answers 400. `OpenAIService.pdf_pages_to_png_base64` opens the PDF with PyMuPDF and
+renders every page to PNG at 150 DPI.
+
+**Each page is its own request.** The page number is only knowable while the pages are still
+separate; merging them into one Markdown document destroys it, and a citation that always reads
+"p.1" is worse than useless because it looks trustworthy. So the parser sends one image per
+request and keeps the index. The cost is latency — the requests are sequential, so page count
+drives ingest time as directly as it drives token cost. A page that comes back empty is dropped
+rather than stored, which leaves a gap in the numbering instead of shifting every later page.
 
 The parsing prompt asks for faithful extraction rather than summarization, and requires
 financial tables to use Markdown table syntax with correct columns and rows.
 
 ## 3. Chunking
 
-`Chunker.split_markdown` is structure-aware rather than length-driven. The rules exist because
-naive splitting destroyed exactly the content we most needed to retrieve.
+`Chunker.split_pages` walks the pages in order and is structure-aware rather than length-driven.
+The rules exist because naive splitting destroyed exactly the content we most needed to
+retrieve.
 
 - **Code fences are stripped.** The vision model wraps its answer in ` ```markdown `, which
   otherwise leaks into the first and last chunk.
@@ -62,7 +71,11 @@ naive splitting destroyed exactly the content we most needed to retrieve.
   splitting that prefers a paragraph break past the halfway point, with `chunk_overlap`
   characters carried into the next chunk.
 
-Defaults are `chunk_size=800` and `chunk_overlap=100`.
+- **Headings survive the page break.** The breadcrumb is threaded from one page into the next, so
+  a table that starts on page 4 under a heading printed on page 3 still carries that heading.
+  Chunking per page without this would trade a correct page number for lost context.
+
+Each chunk records the page it came from. Defaults are `chunk_size=800` and `chunk_overlap=100`.
 
 JSON output (org charts) is kept whole when it fits inside `chunk_size`.
 

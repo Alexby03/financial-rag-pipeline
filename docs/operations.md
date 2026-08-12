@@ -17,8 +17,9 @@ optional.
 
 **Vision parsing answers 400 on a PDF.**
 The chat completions endpoint does not accept `application/pdf` as image input. PDFs are
-rasterized to PNG per page before being sent; if this reappears, check that the PDF branch in
-`DocumentParser` is still being taken.
+rasterized to PNG per page before being sent; if this reappears, check that
+`DocumentParser._parse_pdf_pages` is still being taken and that no caller passes raw PDF bytes
+to `chat_completion_with_image`, which now only handles a single image.
 
 **Rerank answers 404 `DeploymentNotFound`.**
 `COHERE_RERANK_MODEL` does not match the Foundry deployment name. The URL and API key can be
@@ -54,17 +55,18 @@ body. Qdrant filtering and the object-key prefix check enforce isolation *given*
 which protects against accidental cross-tenant reads but not against a caller who simply sends a
 different id. This is the single largest gap before anything resembling production.
 
-**Page numbers are not real.** Ingest never passes a page number, so every chunk is stored with
-`page_number=1` and citations always read "p.1". Parsing produces one Markdown document for the
-whole file, so the page boundary is lost before chunking. Fixing this means parsing per page and
-carrying the index through to `TextChunk`.
+**Page numbers are only as good as the parse.** They are real now — pages are parsed separately
+and the index is carried through to the chunk — but a page whose parse comes back empty is
+skipped, so numbering follows the source document rather than the stored chunks. Non-paginated
+inputs (images, plain text, org charts) are always page 1.
 
 **Presigned URLs are bearer capabilities.** Anyone holding the link can fetch the file until it
 expires, with no further authorization. `PRESIGNED_URL_TTL_SECONDS` (default 900) is the only
 control, and shortening it is the cheapest mitigation.
 
 **Ingest is synchronous.** A large PDF blocks the request for as long as vision parsing takes,
-one image per page. There is no job queue, retry, or progress reporting.
+which is now one sequential request per page. There is no job queue, retry, or progress
+reporting, and no parallelism across pages — a fifty-page document is fifty round trips.
 
 **Chunk text leaves the OpenAI boundary when reranking is on.** Candidate chunks are sent to the
 Cohere deployment on Azure. For Financial material this is a data residency question worth answering

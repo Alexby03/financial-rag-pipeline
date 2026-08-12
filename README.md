@@ -77,8 +77,9 @@ For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exact
   each hit with its similarity score and rerank score, how many neighbouring chunks were pulled
   in through the double-linked list, and the reasoning summary from the answer model.
 - **Clickable sources**: each source resolves through `/sources/url` to a presigned MinIO URL.
-  PDFs and images open inline in a new tab, spreadsheets and other formats download. The bytes
-  go straight from MinIO to the browser rather than being proxied through the API.
+  PDFs and images open inline in a new tab, spreadsheets and other formats download, and a PDF
+  opens on the page the chunk was cited from. The bytes go straight from MinIO to the browser
+  rather than being proxied through the API.
 - **Upload tab**: ingests documents without leaving the UI.
 
 Point the frontend at another API with `RAG_API_URL`. When the API runs inside Docker, set
