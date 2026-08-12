@@ -15,21 +15,24 @@ An MVP for a multimodal RAG system in the Financial industry.
 | Answer generation | OpenAI reasoning model through the Responses API |
 | Frontend | Streamlit |
 
-Qdrant and MinIO run through Docker Compose. The API and frontend run as two processes; the
-frontend is a pure HTTP client and holds no credentials of its own.
+Qdrant and MinIO run through Docker Compose. The API process hosts an in-memory ingest worker
+alongside HTTP; the Streamlit frontend is a pure HTTP client and holds no credentials of its
+own.
 
 ## Shape
 
 ```
                  ┌───────────┐
-   upload  ──────▶  FastAPI  ├────────▶ MinIO        (original files)
-                 │           ├────────▶ Qdrant       (chunks + metadata)
-   question ─────▶           ├────────▶ OpenAI       (vision, embeddings, answers)
-                 └─────┬─────┘────────▶ Cohere       (reranking)
+   upload  ──────▶  FastAPI  ├──queue──▶ lifespan worker
+                 │  (202)    │              │
+                 │           ├──────────────┼──▶ MinIO        (original files)
+   job status ───▶           │              ├──▶ Qdrant       (chunks + metadata)
+   question ─────▶           ├──────────────┼──▶ OpenAI       (vision, embeddings, answers)
+                 └─────┬─────┘──────────────┴──▶ Cohere       (reranking)
                        │
                  presigned URL
                        │
-   browser ◀───────────┴──────────────  MinIO        (file bytes, direct)
+   browser ◀───────────┴───────────────────────  MinIO        (file bytes, direct)
 ```
 
 Two properties are worth noting in that picture. File bytes never travel back through the API:

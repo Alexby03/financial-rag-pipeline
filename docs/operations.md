@@ -21,10 +21,10 @@ rasterized to PNG per page before being sent; if this reappears, check that
 `DocumentParser._parse_pdf_pages` is still being taken and that no caller passes raw PDF bytes
 to `chat_completion_with_image`, which now only handles a single image.
 
-**Ingest returns `status="duplicate"` and indexes nothing.**
-Expected. The same tenant already has chunks with that content hash, so parsing was skipped. To
-force a re-parse — after changing the parser, say — delete the document's chunks first; the
-metadata alone cannot be corrected through `/ingest`.
+**Ingest job returns `status="duplicate"` and indexes nothing.**
+Expected. The same tenant already has chunks with that content hash, so the worker skipped
+parsing. To force a re-parse — after changing the parser, say — delete the document's chunks
+first; the metadata alone cannot be corrected through `/ingest`.
 
 **The same document appears twice in the sources.**
 Chunks stored before content hashing carry `content_hash: null` and never match the duplicate
@@ -90,9 +90,10 @@ different bytes and are indexed as separate documents.
 expires, with no further authorization. `PRESIGNED_URL_TTL_SECONDS` (default 900) is the only
 control, and shortening it is the cheapest mitigation.
 
-**Ingest is synchronous.** A large PDF blocks the request for as long as vision parsing takes,
-which is now one sequential request per page. There is no job queue, retry, or progress
-reporting, and no parallelism across pages — a fifty-page document is fifty round trips.
+**Ingest jobs are in-memory only.** `POST /ingest` returns `202` immediately and a lifespan
+worker runs parse/embed/upsert via `asyncio.to_thread`. A process restart drops queued and
+running jobs; re-upload. There is no cancel, retry, or multi-worker queue yet — polling
+`GET /ingest/jobs/{job_id}` is the only progress channel.
 
 **Chunk text leaves the OpenAI boundary when reranking is on.** Candidate chunks are sent to the
 Cohere deployment on Azure. For Financial material this is a data residency question worth answering

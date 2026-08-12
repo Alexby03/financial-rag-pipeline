@@ -39,7 +39,8 @@ Chat UI: http://localhost:8501
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check for Qdrant and MinIO |
-| POST | `/ingest` | Upload document with metadata, skipping content already indexed |
+| POST | `/ingest` | Accept a document upload (`202` + `job_id`); work continues in the API worker |
+| GET | `/ingest/jobs/{job_id}` | Poll ingest job status (`queued` / `running` / `completed` / `duplicate` / `failed`) |
 | POST | `/query` | RAG query with tenant and optional filters |
 | GET | `/sources/url` | Presigned MinIO URL for a chunk's source file |
 
@@ -80,7 +81,8 @@ For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exact
   PDFs and images open inline in a new tab, spreadsheets and other formats download, and a PDF
   opens on the page the chunk was cited from. The bytes go straight from MinIO to the browser
   rather than being proxied through the API.
-- **Upload tab**: ingests documents without leaving the UI.
+- **Upload tab**: accepts a document, then polls the ingest job while a non-dismissible toast
+  shows queue/stage progress until indexing finishes.
 
 Point the frontend at another API with `RAG_API_URL`. When the API runs inside Docker, set
 `MINIO_PUBLIC_ENDPOINT` to the host the browser can reach, since presigned URLs are signed
@@ -89,6 +91,7 @@ against that hostname.
 ## Ingest example
 
 ```bash
+# Accept the upload (returns immediately)
 curl -X POST "http://localhost:8000/ingest" \
   -F "file=@q3_report_2024.pdf" \
   -F "tenant_id=default_tenant_test_corp_123" \
@@ -98,12 +101,15 @@ curl -X POST "http://localhost:8000/ingest" \
   -F "year=2024" \
   -F "quarter=3" \
   -F "language=sv"
+# → {"job_id":"...","status":"queued"}
+
+# Poll until completed / duplicate / failed
+curl "http://localhost:8000/ingest/jobs/<job_id>"
 ```
 
-Documents are identified by a sha256 of their bytes, not by filename. Uploading content that is
-already indexed for the tenant returns `status="duplicate"` with the existing chunk count in
-about a second, without parsing, so the same report under a new name never costs a second
-vision pass.
+Documents are identified by a sha256 of their bytes, not by filename. The worker reports
+`status="duplicate"` with the existing chunk count when the tenant already has that content,
+without a second vision pass. Jobs live only in the API process memory.
 
 ## Query example
 
