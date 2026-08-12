@@ -10,6 +10,8 @@ from app.services.openai_client import OpenAIService
 MARKDOWN_SYSTEM_PROMPT = """You extract content from Financial documents.
 Return structured Markdown that preserves headings, paragraphs, and tables.
 Financial tables MUST use Markdown table syntax with correct columns and rows.
+Signature pages are ordinary content: transcribe the printed text around them and write
+[signatur] where a handwritten signature appears, without naming or identifying the signatory.
 Do not summarize — extract faithfully."""
 
 MARKDOWN_USER_PROMPT = """Extract all text and tables from this document.
@@ -25,6 +27,30 @@ ORG_CHART_USER_PROMPT = (
 )
 
 FINANCIAL_DOC_TYPES = {DocType.FINANCIAL_REPORT, DocType.AGREEMENT, DocType.MINUTES}
+
+REFUSAL_MARKERS = (
+    "i'm sorry",
+    "i am sorry",
+    "i can't help",
+    "i cannot help",
+    "i can't assist",
+    "i cannot assist",
+    "i'm unable to",
+    "i am unable to",
+)
+REFUSAL_MAX_LENGTH = 200
+
+
+def is_refusal(markdown: str) -> bool:
+    """Vision models decline signature pages. A refusal is short and apologetic; a page is not.
+
+    Storing one would put "I'm sorry, I can't help with that." in the index as if it were
+    content, where it is indistinguishable from a real chunk to both the embedder and the reader.
+    """
+    text = markdown.strip().lower()
+    if len(text) > REFUSAL_MAX_LENGTH:
+        return False
+    return any(marker in text for marker in REFUSAL_MARKERS)
 
 
 class DocumentParser:
@@ -74,6 +100,8 @@ class DocumentParser:
             encoded,
             mime_type,
         )
+        if is_refusal(markdown):
+            return []
         return [ParsedPage(text=markdown, page_number=1)]
 
     def _parse_pdf_pages(self, file_bytes: bytes) -> list[ParsedPage]:
@@ -86,7 +114,7 @@ class DocumentParser:
                 page_png,
                 "image/png",
             )
-            if markdown.strip():
+            if markdown.strip() and not is_refusal(markdown):
                 pages.append(ParsedPage(text=markdown, page_number=index))
         return pages
 

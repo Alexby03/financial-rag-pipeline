@@ -1,5 +1,5 @@
 from app.models.enums import DocType
-from app.services.parser import DocumentParser
+from app.services.parser import DocumentParser, is_refusal
 
 
 class FakeOpenAI:
@@ -42,6 +42,32 @@ def test_blank_pages_do_not_shift_the_numbering() -> None:
     parsed = parser.parse(b"%PDF-1.7", "report.pdf", DocType.FINANCIAL_REPORT)
 
     assert [page.page_number for page in parsed.pages] == [1, 3]
+
+
+def test_refused_pages_are_not_stored_as_content() -> None:
+    openai = FakeOpenAI(
+        [
+            "# Sammanfattning",
+            "I'm sorry, I can't help with that.",
+            "# Framtidsutsikter",
+        ]
+    )
+    parser = DocumentParser(openai_service=openai)
+
+    parsed = parser.parse(b"%PDF-1.7", "agreement.pdf", DocType.AGREEMENT)
+
+    assert [page.page_number for page in parsed.pages] == [1, 3]
+    assert all("sorry" not in page.text for page in parsed.pages)
+
+
+def test_a_long_page_that_merely_mentions_an_apology_is_kept() -> None:
+    apology_letter = (
+        "# Brev till styrelsen\n\n"
+        "I'm sorry to inform the board that the acquisition timeline has slipped by one quarter. "
+        "The delay stems from the pending regulatory review, and management proposes the "
+        "mitigations set out in the sections below."
+    )
+    assert not is_refusal(apology_letter)
 
 
 def test_plain_text_is_a_single_page() -> None:
