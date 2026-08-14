@@ -22,11 +22,11 @@ INGEST_POLL_INTERVAL_SECONDS = 1.5
 INGEST_POLL_TIMEOUT_SECONDS = 1800.0
 
 STAGE_LABELS = {
-    "checking": "Kontrollerar dubbletter…",
-    "uploading": "Laddar upp till lagring…",
-    "parsing": "Parsar dokumentet…",
-    "embedding": "Skapar embeddings…",
-    "indexing": "Indexerar i Qdrant…",
+    "checking": "Checking for duplicates...",
+    "uploading": "Uploading to storage...",
+    "parsing": "Parsing the document...",
+    "embedding": "Creating embeddings...",
+    "indexing": "Indexing in Qdrant...",
 }
 
 st.set_page_config(page_title="Financial RAG", layout="wide")
@@ -95,39 +95,39 @@ def check_health(api_url: str) -> dict[str, str] | None:
 def render_trace(response: QueryResponse) -> None:
     trace = response.trace
     label = (
-        f"Agentens resonemang — {trace.retrieval_ms} ms sökning, "
-        f"{trace.generation_ms} ms svar, {trace.context_chunk_count} chunkar i kontext"
+        f"Agent reasoning — {trace.retrieval_ms} ms retrieval, "
+        f"{trace.generation_ms} ms answer, {trace.context_chunk_count} chunks in context"
     )
     with st.expander(label):
-        st.markdown("**1. Sökning i Qdrant**")
-        st.caption(f"Embedding-modell `{trace.embedding_model}`, top_k {trace.top_k}")
+        st.markdown("**1. Qdrant search**")
+        st.caption(f"Embedding model `{trace.embedding_model}`, top_k {trace.top_k}")
         st.write({key: str(value) for key, value in trace.filters.items()})
 
-        st.markdown("**2. Omrankning**")
+        st.markdown("**2. Reranking**")
         if trace.rerank is None:
-            st.caption("Avstängd — ordningen kommer direkt från vektorsökningen.")
+            st.caption("Off — order comes from vector search.")
         elif trace.rerank.applied:
             st.caption(
-                f"`{trace.rerank.model}` rankade om {trace.rerank.candidates} kandidater "
-                f"på {trace.rerank.rerank_ms} ms."
+                f"`{trace.rerank.model}` reranked {trace.rerank.candidates} candidates "
+                f"in {trace.rerank.rerank_ms} ms."
             )
         else:
             st.warning(
-                "Omrankningen hoppades över, vektorordningen behölls. "
+                "Reranking was skipped; vector order was kept. "
                 f"{trace.rerank.fallback_reason}"
             )
 
-        st.markdown("**3. Träffar och likhet**")
+        st.markdown("**3. Hits and similarity**")
         if trace.hits:
             st.dataframe(
                 [
                     {
-                        "Vektorplats": hit.vector_rank,
+                        "Vector rank": hit.vector_rank,
                         "Score": round(hit.score, 4),
                         "Rerank": "—" if hit.rerank_score is None else round(hit.rerank_score, 4),
-                        "Källa": hit.source_filename,
-                        "Sida": hit.page_number,
-                        "Utdrag": hit.preview,
+                        "Source": hit.source_filename,
+                        "Page": hit.page_number,
+                        "Preview": hit.preview,
                     }
                     for hit in trace.hits
                 ],
@@ -135,22 +135,22 @@ def render_trace(response: QueryResponse) -> None:
                 width="stretch",
             )
         else:
-            st.info("Inga chunkar matchade filtren.")
+            st.info("No chunks matched the filters.")
 
-        st.markdown("**4. Grannexpansion**")
+        st.markdown("**4. Neighbor expansion**")
         if trace.neighbor_chunk_ids:
             st.caption(
-                f"{len(trace.neighbor_chunk_ids)} angränsande chunkar hämtades via "
-                "den dubbellänkade listan för att komplettera träffarna."
+                f"{len(trace.neighbor_chunk_ids)} neighboring chunks were fetched via "
+                "the doubly linked list to complement the hits."
             )
         else:
-            st.caption("Inga grannar hämtades.")
+            st.caption("No neighbors were fetched.")
 
-        st.markdown(f"**5. Svar med `{trace.answer_model}`**")
+        st.markdown(f"**5. Answer with `{trace.answer_model}`**")
         if trace.reasoning_summary:
             st.markdown(trace.reasoning_summary)
         else:
-            st.caption("Modellen svarade utan att behöva resonera i flera steg.")
+            st.caption("The model answered without multi-step reasoning.")
 
 
 def render_source(source: SourceChunk, api_url: str, index: int) -> None:
@@ -161,21 +161,21 @@ def render_source(source: SourceChunk, api_url: str, index: int) -> None:
     with st.container(border=True):
         header, action = st.columns([4, 1])
         with header:
-            st.markdown(f"**{index}. {meta.source_filename}** — sida {meta.page_number}")
+            st.markdown(f"**{index}. {meta.source_filename}** — page {meta.page_number}")
             st.caption(f"Score {score} · {meta.doc_type.value} · {meta.category.value}")
         with action:
             link = fetch_source_url(api_url, meta.tenant_id, meta.object_key)
             if link is None:
-                st.caption("Filen saknas i MinIO")
+                st.caption("File missing in MinIO")
             elif link.disposition == "inline":
                 st.link_button(
-                    "Öppna",
+                    "Open",
                     source_link_url(link, meta.page_number),
                     width="stretch",
                 )
             else:
-                st.link_button("Ladda ner", link.url, width="stretch")
-        with st.expander("Visa chunk"):
+                st.link_button("Download", link.url, width="stretch")
+        with st.expander("Show chunk"):
             st.markdown(source.raw_text)
 
 
@@ -183,7 +183,7 @@ def render_answer(response: QueryResponse, api_url: str) -> None:
     st.markdown(response.answer)
     render_trace(response)
     if response.sources:
-        st.markdown("**Källor**")
+        st.markdown("**Sources**")
         for index, source in enumerate(response.sources, start=1):
             render_source(source, api_url, index)
 
@@ -212,20 +212,20 @@ def fetch_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
 
 def toast_ingest_progress(job: IngestJobStatusResponse) -> None:
     if job.status == "queued":
-        st.toast("Uppladdning köad…", icon="⏳", duration="infinite")
+        st.toast("Upload queued...", icon="⏳", duration="infinite")
         return
     if job.status == "running":
-        label = STAGE_LABELS.get(job.stage or "", "Bearbetar dokumentet…")
+        label = STAGE_LABELS.get(job.stage or "", "Processing the document...")
         st.toast(label, icon="⏳", duration="infinite")
         return
     if job.status == "completed":
-        st.toast("Dokumentet är uppladdat", icon="✅", duration="infinite")
+        st.toast("Document uploaded", icon="✅", duration="infinite")
         return
     if job.status == "duplicate":
-        st.toast("Dokumentet fanns redan indexerat", icon="ℹ️", duration="infinite")
+        st.toast("Document was already indexed", icon="ℹ️", duration="infinite")
         return
     st.toast(
-        f"Uppladdningen misslyckades: {job.error or 'okänt fel'}",
+        f"Upload failed: {job.error or 'unknown error'}",
         icon="❌",
         duration="infinite",
     )
@@ -252,35 +252,35 @@ def wait_for_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
 
 
 with st.sidebar:
-    st.header("Inställningar")
-    api_url = st.text_input("API-adress", value=DEFAULT_API_URL).rstrip("/")
+    st.header("Settings")
+    api_url = st.text_input("API URL", value=DEFAULT_API_URL).rstrip("/")
     tenant_id = st.text_input("Tenant ID", value=DEFAULT_TENANT_ID)
 
-    st.subheader("Filter")
+    st.subheader("Filters")
     doc_type = st.selectbox(
-        "Dokumenttyp", options=[None, *DocType], format_func=lambda x: "Alla" if x is None else x
+        "Document type", options=[None, *DocType], format_func=lambda x: "All" if x is None else x
     )
     category = st.selectbox(
-        "Kategori", options=[None, *Category], format_func=lambda x: "Alla" if x is None else x
+        "Category", options=[None, *Category], format_func=lambda x: "All" if x is None else x
     )
-    year = st.number_input("År", min_value=1990, max_value=2100, value=None, step=1)
+    year = st.number_input("Year", min_value=1990, max_value=2100, value=None, step=1)
     quarter = st.selectbox(
-        "Kvartal",
+        "Quarter",
         options=[None, 1, 2, 3, 4],
-        format_func=lambda x: "Alla" if x is None else f"Q{x}",
+        format_func=lambda x: "All" if x is None else f"Q{x}",
     )
-    top_k = st.slider("Antal chunkar (top_k)", min_value=1, max_value=20, value=5)
-    expand_neighbors = st.checkbox("Hämta angränsande chunkar", value=True)
-    use_rerank = st.checkbox("Ranka om med Cohere Rerank", value=True)
+    top_k = st.slider("Number of chunks (top_k)", min_value=1, max_value=20, value=5)
+    expand_neighbors = st.checkbox("Fetch neighboring chunks", value=True)
+    use_rerank = st.checkbox("Rerank with Cohere Rerank", value=True)
 
     with st.spinner("Checking API..."):
         health = check_health(api_url)
     if health is None:
-        st.error("Når inte API:t")
+        st.error("Cannot reach the API")
     else:
         st.caption(f"Qdrant: {health['qdrant']} · MinIO: {health['minio']}")
 
-chat_tab, upload_tab = st.tabs(["Chatt", "Ladda upp"])
+chat_tab, upload_tab = st.tabs(["Chat", "Upload"])
 
 with chat_tab:
     if "messages" not in st.session_state:
@@ -293,14 +293,14 @@ with chat_tab:
             else:
                 render_answer(message["content"], api_url)
 
-    question = st.chat_input("Fråga något om dina dokument")
+    question = st.chat_input("Ask something about your documents")
     if question:
         st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
             st.markdown(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("Söker i dokumenten..."):
+            with st.spinner("Searching documents..."):
                 try:
                     answer = run_query(
                         api_url,
@@ -317,32 +317,32 @@ with chat_tab:
                         },
                     )
                 except httpx.HTTPError as error:
-                    st.error(f"Frågan misslyckades: {error}")
+                    st.error(f"Query failed: {error}")
                 else:
                     render_answer(answer, api_url)
                     st.session_state.messages.append({"role": "assistant", "content": answer})
 
 with upload_tab:
-    st.subheader("Ladda upp dokument")
+    st.subheader("Upload document")
     with st.form("ingest"):
-        uploaded = st.file_uploader("Fil", type=["pdf", "png", "jpg", "jpeg", "xlsx", "txt", "md"])
-        company_name = st.text_input("Företagsnamn", value="SME Corp AB")
-        upload_doc_type = st.selectbox("Dokumenttyp", options=list(DocType), key="upload_doc_type")
-        upload_category = st.selectbox("Kategori", options=list(Category), key="upload_category")
-        upload_year = st.number_input("År", min_value=1990, max_value=2100, value=2024, step=1)
+        uploaded = st.file_uploader("File", type=["pdf", "png", "jpg", "jpeg", "xlsx", "txt", "md"])
+        company_name = st.text_input("Company name", value="SME Corp AB")
+        upload_doc_type = st.selectbox("Document type", options=list(DocType), key="upload_doc_type")
+        upload_category = st.selectbox("Category", options=list(Category), key="upload_category")
+        upload_year = st.number_input("Year", min_value=1990, max_value=2100, value=2024, step=1)
         upload_quarter = st.selectbox(
-            "Kvartal",
+            "Quarter",
             options=[None, 1, 2, 3, 4],
             format_func=lambda x: "—" if x is None else f"Q{x}",
         )
-        language = st.text_input("Språk", value="sv")
-        submitted = st.form_submit_button("Ladda upp och indexera")
+        language = st.text_input("Language", value="sv")
+        submitted = st.form_submit_button("Upload and index")
 
     if submitted:
         if uploaded is None:
-            st.warning("Välj en fil först.")
+            st.warning("Choose a file first.")
         else:
-            with st.spinner("Köar uppladdningen..."):
+            with st.spinner("Queueing the upload..."):
                 try:
                     accepted = submit_ingest(
                         api_url,
@@ -359,16 +359,16 @@ with upload_tab:
                     )
                     result = wait_for_ingest_job(api_url, accepted.job_id)
                 except httpx.HTTPError as error:
-                    st.error(f"Uppladdningen misslyckades: {error}")
+                    st.error(f"Upload failed: {error}")
                 else:
                     if result.status == "failed":
-                        st.error(f"Uppladdningen misslyckades: {result.error or 'okänt fel'}")
+                        st.error(f"Upload failed: {result.error or 'unknown error'}")
                     elif result.status == "duplicate":
                         st.info(
-                            f"Filen är redan indexerad med {result.chunk_count} chunkar. "
-                            "Ingen ny parsning gjordes."
+                            f"The file is already indexed with {result.chunk_count} chunks. "
+                            "No new parsing was done."
                         )
-                        st.caption(f"Objekt: `{result.object_key}`")
+                        st.caption(f"Object: `{result.object_key}`")
                     else:
-                        st.success(f"Indexerade {result.chunk_count} chunkar")
-                        st.caption(f"Objekt: `{result.object_key}`")
+                        st.success(f"Indexed {result.chunk_count} chunks")
+                        st.caption(f"Object: `{result.object_key}`")
