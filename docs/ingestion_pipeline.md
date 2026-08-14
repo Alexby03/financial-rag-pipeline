@@ -129,7 +129,7 @@ Every vector point carries this payload. The `metadata.*` fields are what filter
         "tenant_id": "default_tenant_test_corp_123",
         "company_name": "SME Corp AB",
         "doc_type": "financial_report",
-        "category": "Financing",
+        "category": "financing",
         "year": 2024,
         "quarter": 3,
         "source_filename": "q3_report_2024.pdf",
@@ -147,8 +147,10 @@ Every vector point carries this payload. The `metadata.*` fields are what filter
 
 Valid enums:
 
-- `doc_type`: `agreement`, `financial_report`, `minutes`, `org_chart`, `other`
-- `category`: `HR`, `Financing`, `Legal`, `Operations`, `other`
+- `doc_type`: `agreement`, `financial_report`, `minutes`, `org_chart`, `accounting_data`,
+  `presentation`, `report_analysis`, `policy_regulation`, `transaction_doc`, `other`
+- `category`: `hr`, `financing`, `legal`, `operations`, `compliance_governance`, `m_and_a`,
+  `strategy_market`, `other`
 
 `app/scripts/init_qdrant.py` creates the collection with cosine distance and payload indexes on
 `tenant_id`, `doc_type`, `category`, `year`, `quarter`, `company_name` and `source_filename`.

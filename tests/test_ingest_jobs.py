@@ -135,7 +135,7 @@ def test_ingest_endpoint_accepts_and_exposes_job_status() -> None:
                 "tenant_id": "tenant_1",
                 "company_name": "SME Corp AB",
                 "doc_type": "financial_report",
-                "category": "Financing",
+                "category": "financing",
                 "year": "2024",
                 "quarter": "3",
                 "language": "sv",

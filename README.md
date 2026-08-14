@@ -97,7 +97,7 @@ curl -X POST "http://localhost:8000/ingest" \
   -F "tenant_id=default_tenant_test_corp_123" \
   -F "company_name=SME Corp AB" \
   -F "doc_type=financial_report" \
-  -F "category=Financing" \
+  -F "category=financing" \
   -F "year=2024" \
   -F "quarter=3" \
   -F "language=sv"
@@ -120,7 +120,7 @@ curl -X POST "http://localhost:8000/query" \
     "question": "What was Q3 revenue?",
     "tenant_id": "default_tenant_test_corp_123",
     "doc_type": "financial_report",
-    "category": "Financing",
+    "category": "financing",
     "year": 2024,
     "quarter": 3
   }'
