@@ -79,6 +79,7 @@ def get_rag_service() -> RagService:
         openai_service=get_openai_service(),
         settings=get_settings(),
         reranker=get_reranker(),
+        storage=get_minio_storage(),
     )
 
 

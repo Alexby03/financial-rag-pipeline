@@ -1,15 +1,22 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.deps import get_ingest_job_manager, get_ingest_service
+from app.api.deps import get_ingest_job_manager, get_ingest_service, get_app_settings
 from app.api.routes import health, ingest, query, sources
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings = get_app_settings()
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(levelname)s:%(name)s:%(message)s",
+        force=True,
+    )
     jobs = get_ingest_job_manager()
     worker = asyncio.create_task(jobs.run_worker(get_ingest_service()))
     try:

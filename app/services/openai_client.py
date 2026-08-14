@@ -1,7 +1,37 @@
+import base64
+from typing import Any
+
 from openai import OpenAI
 
 from app.config import Settings
 from app.models.llm import ReasonedAnswer
+
+FIGURE_VISION_PROMPT = """You extract quantitative answers from charts and figures in Financial documents.
+
+Rules for charts:
+- Read axis titles and units first (MSEK, mdkr, SEK, %, etc.).
+- Locate the asked year or period on the x-axis. "Beginning of 2022" / "början av 2022" means
+  the 2022 tick or the left edge of that year — not mid-year and not 2023.
+- For stacked area or stacked bar charts, the TOTAL is the top of the full stack at that
+  x position, not a single series and not the chart's y-axis maximum.
+- Use labeled tick marks. Interpolate between ticks and say the value is approximate when you do.
+- Do not invent a round number that conflicts with nearby ticks.
+- Briefly cite the ticks you used (e.g. "y-axis between 5 000 000 and 6 000 000 at the 2022 mark").
+- If the crop is too low-resolution to read reliably, say so instead of guessing.
+
+Reply in the same language as the question. Lead with the answer value, then the brief method."""
+
+
+def image_media_type(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and b"WEBP" in image_bytes[:16]:
+        return "image/webp"
+    return "image/png"
 
 
 class OpenAIService:
@@ -20,6 +50,37 @@ class OpenAIService:
 
     def embed_text(self, text: str) -> list[float]:
         return self.embed_texts([text])[0]
+
+    def read_figure(
+        self,
+        question: str,
+        caption: str,
+        image_bytes: bytes,
+        source: str,
+    ) -> str:
+        """Ask the vision model to read a stored crop against the user's question."""
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        media_type = image_media_type(image_bytes)
+        content: list[dict[str, Any]] = [
+            {
+                "type": "input_text",
+                "text": (
+                    f"Question:\n{question}\n\nSource: {source}\n\n"
+                    f"OCR caption (may be incomplete):\n{caption}"
+                ),
+            },
+            {
+                "type": "input_image",
+                "detail": "high",
+                "image_url": f"data:{media_type};base64,{encoded}",
+            },
+        ]
+        response = self._client.responses.create(
+            model=self._settings.openai_vision_model,
+            instructions=FIGURE_VISION_PROMPT,
+            input=[{"role": "user", "content": content}],
+        )
+        return response.output_text.strip()
 
     def answer_with_reasoning(self, system_prompt: str, user_prompt: str) -> ReasonedAnswer:
         response = self._client.responses.create(
