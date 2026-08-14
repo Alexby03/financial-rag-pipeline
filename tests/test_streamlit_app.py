@@ -107,9 +107,9 @@ def test_chat_renders_answer_trace_and_source_link() -> None:
         assert "Nettoomsattningen var 150,0 MSEK." in rendered
         assert "Jag letade upp tabellen" in rendered
         captions = " ".join(element.value for element in app.caption)
-        assert "rankade om 20 kandidater" in captions
+        assert "reranked 20 candidates" in captions
         assert "rerank 0.950" in captions
-        assert "sida 4" in rendered
+        assert "page 4" in rendered
         links = list(app.get("link_button"))
         assert links and links[0].proto.url == f"{SOURCE_URL_RESPONSE['url']}#page=4"
 
@@ -131,5 +131,17 @@ def test_rerank_fallback_is_surfaced_as_a_warning() -> None:
         assert not app.exception
 
         warnings = " ".join(element.value for element in app.warning)
-        assert "vektorordningen behölls" in warnings
+        assert "vector order was kept" in warnings
         assert "401" in warnings
+
+
+def test_running_status_uses_css_spinner_and_toasts_stay_clickable() -> None:
+    with patch("httpx.get", side_effect=fake_get), patch("httpx.post", side_effect=fake_post):
+        app = AppTest.from_file(APP_PATH, default_timeout=30)
+        app.run()
+        assert not app.exception
+
+        styles = " ".join(element.value for element in app.markdown)
+        assert "stStatusWidgetRunningManIcon" in styles
+        assert "rag-spin" in styles
+        assert "pointer-events: none" not in styles
