@@ -11,10 +11,10 @@ IngestJobStage = Literal["checking", "uploading", "parsing", "embedding", "index
 
 class IngestMetadata(BaseModel):
     tenant_id: str
-    company_name: str
-    doc_type: DocType
-    category: Category
-    year: int
+    company_name: str | None = None
+    doc_type: DocType | None = None
+    category: Category | None = None
+    year: int | None = None
     quarter: int | None = Field(default=None, ge=1, le=4)
     language: str = "sv"
 
@@ -43,6 +43,13 @@ class IngestJobStatusResponse(BaseModel):
     error: str | None = None
 
 
+class ChatTurn(BaseModel):
+    """One prior turn in the browser session. Not persisted server-side."""
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class QueryRequest(BaseModel):
     question: str
     tenant_id: str
@@ -53,6 +60,8 @@ class QueryRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
     expand_neighbors: bool = False
     rerank: bool = True
+    # Prior turns from the Streamlit tab; dropped when the tab reloads.
+    chat_history: list[ChatTurn] = Field(default_factory=list)
 
 
 class SourceChunk(BaseModel):
@@ -80,6 +89,16 @@ class RerankTrace(BaseModel):
     rerank_ms: int = 0
 
 
+class FigureReadingTrace(BaseModel):
+    chunk_id: str
+    source_filename: str
+    page_number: int
+    applied: bool
+    reading: str = ""
+    preview: str = ""
+    error: str = ""
+
+
 class RetrievalTrace(BaseModel):
     """What the agent actually did to answer, surfaced to the user for transparency."""
 
@@ -92,8 +111,11 @@ class RetrievalTrace(BaseModel):
     context_chunk_count: int = 0
     retrieval_ms: int = 0
     generation_ms: int = 0
+    vision_ms: int = 0
+    vision_model: str = ""
     reasoning_summary: str = ""
     rerank: RerankTrace | None = None
+    figure_readings: list[FigureReadingTrace] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):

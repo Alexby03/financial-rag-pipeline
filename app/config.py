@@ -9,13 +9,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     openai_api_key: str
-    # Vision model used for parsing documents during ingest.
-    openai_chat_model: str = "gpt-4o"
     openai_embedding_model: str = "text-embedding-3-small"
     # Reasoning model used to answer queries, so the UI can show its reasoning summary.
     openai_answer_model: str = "gpt-5-mini"
     openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] = "medium"
     openai_reasoning_summary: Literal["auto", "concise", "detailed"] = "auto"
+    # Reads retrieved figure crops before the reasoning model answers. Blank disables.
+    # Prefer gpt-4o over mini for stacked charts and axis interpolation.
+    openai_vision_model: str = "gpt-4o"
 
     # Cohere Rerank on Azure AI Foundry. Reranking stays off until both values are set.
     cohere_api_base: str = ""
@@ -23,6 +24,14 @@ class Settings(BaseSettings):
     cohere_rerank_model: str = "rerank-multilingual-v3.0"
     rerank_candidate_multiplier: int = Field(default=4, ge=1, le=10)
     rerank_timeout_seconds: float = 10.0
+
+    # Mistral OCR 4 on Azure AI Foundry. Required for PDF/Office/image ingest.
+    mistral_ocr_endpoint: str = ""
+    mistral_ocr_api_key: str = ""
+    mistral_ocr_model: str = "mistral-ocr-4-0"
+    mistral_ocr_timeout_seconds: float = Field(default=300.0, ge=30.0, le=1800.0)
+    # Foundry OCR 4 rejects the whole PDF above this page count (error 3730).
+    mistral_ocr_max_pages: int = Field(default=30, ge=1, le=1000)
 
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
@@ -47,6 +56,10 @@ class Settings(BaseSettings):
     @property
     def rerank_configured(self) -> bool:
         return bool(self.cohere_api_base and self.cohere_api_key)
+
+    @property
+    def mistral_ocr_configured(self) -> bool:
+        return bool(self.mistral_ocr_endpoint and self.mistral_ocr_api_key)
 
 
 @lru_cache

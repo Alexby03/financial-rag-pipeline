@@ -59,6 +59,15 @@ class MinioStorage:
         )
         return object_key
 
+    def delete(self, object_key: str) -> None:
+        """Remove an object. Missing keys are ignored so rollback can be best-effort."""
+        try:
+            self._client.remove_object(self._bucket, object_key)
+        except S3Error as error:
+            if error.code in {"NoSuchKey", "NoSuchObject"}:
+                return
+            raise
+
     @property
     def url_ttl_seconds(self) -> int:
         return int(self._ttl.total_seconds())

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from app.config import Settings
 from app.models.api import IngestMetadata
+from app.models.enums import Category, DocType
 from app.models.metadata import ChunkMetadata, QdrantPayload
 from app.models.parsed import ParsedPage
 
@@ -22,6 +23,7 @@ def strip_code_fence(text: str) -> str:
 class TextChunk:
     text: str
     page_number: int
+    figure_object_key: str | None = None
 
 
 class Chunker:
@@ -110,14 +112,15 @@ class Chunker:
         for index, chunk in enumerate(chunks):
             metadata = ChunkMetadata(
                 tenant_id=ingest_metadata.tenant_id,
-                company_name=ingest_metadata.company_name,
-                doc_type=ingest_metadata.doc_type,
-                category=ingest_metadata.category,
-                year=ingest_metadata.year,
+                company_name=_required_company_name(ingest_metadata),
+                doc_type=_required_doc_type(ingest_metadata),
+                category=_required_category(ingest_metadata),
+                year=_required_year(ingest_metadata),
                 quarter=ingest_metadata.quarter,
                 source_filename=source_filename,
                 object_key=object_key,
                 content_hash=content_hash,
+                figure_object_key=chunk.figure_object_key,
                 page_number=chunk.page_number,
                 chunk_id=chunk_ids[index],
                 previous_chunk_id=chunk_ids[index - 1] if index > 0 else None,
@@ -221,3 +224,28 @@ class Chunker:
     @staticmethod
     def new_document_id() -> str:
         return str(uuid.uuid4())
+
+
+def _required_company_name(metadata: IngestMetadata) -> str:
+    if not metadata.company_name or not metadata.company_name.strip():
+        raise ValueError("company_name is required before indexing")
+    return metadata.company_name.strip()
+
+
+def _required_doc_type(metadata: IngestMetadata) -> DocType:
+    if metadata.doc_type is None:
+        raise ValueError("doc_type is required before indexing")
+    return metadata.doc_type
+
+
+def _required_category(metadata: IngestMetadata) -> Category:
+    if metadata.category is None:
+        raise ValueError("category is required before indexing")
+    return metadata.category
+
+
+def _required_year(metadata: IngestMetadata) -> int:
+    if metadata.year is None:
+        raise ValueError("year is required before indexing")
+    return metadata.year
+

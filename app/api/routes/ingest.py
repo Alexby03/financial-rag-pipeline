@@ -12,10 +12,10 @@ router = APIRouter(prefix="/ingest", tags=["ingest"])
 async def ingest_document(
     file: UploadFile = File(...),
     tenant_id: str = Form(...),
-    company_name: str = Form(...),
-    doc_type: DocType = Form(...),
-    category: Category = Form(...),
-    year: int = Form(...),
+    company_name: str | None = Form(default=None),
+    doc_type: DocType | None = Form(default=None),
+    category: Category | None = Form(default=None),
+    year: int | None = Form(default=None),
     quarter: int | None = Form(default=None),
     language: str = Form(default="sv"),
     jobs: IngestJobManager = Depends(get_ingest_job_manager),
@@ -24,7 +24,7 @@ async def ingest_document(
     filename = file.filename or "upload.bin"
     metadata = IngestMetadata(
         tenant_id=tenant_id,
-        company_name=company_name,
+        company_name=company_name or None,
         doc_type=doc_type,
         category=category,
         year=year,

@@ -54,7 +54,7 @@ pydantic-core==2.46.4
 pydantic-settings==2.15.0
 pydeck==0.9.3
 pygments==2.20.0
-pymupdf==1.28.2
+pypdf==6.16.1
 pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dateutil==2.9.0.post0

@@ -6,6 +6,7 @@ from app.services.embedder import Embedder
 from app.services.ingest import IngestService
 from app.services.ingest_jobs import IngestJobManager
 from app.services.minio_client import MinioStorage
+from app.services.mistral_ocr import MistralOcrClient
 from app.services.openai_client import OpenAIService
 from app.services.parser import DocumentParser
 from app.services.qdrant_service import QdrantService
@@ -34,8 +35,13 @@ def get_embedder() -> Embedder:
 
 
 @lru_cache
+def get_mistral_ocr_client() -> MistralOcrClient:
+    return MistralOcrClient(get_settings())
+
+
+@lru_cache
 def get_parser() -> DocumentParser:
-    return DocumentParser(get_openai_service())
+    return DocumentParser(get_mistral_ocr_client())
 
 
 @lru_cache

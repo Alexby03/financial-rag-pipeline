@@ -16,6 +16,8 @@ class ChunkMetadata(BaseModel):
     object_key: str
     # Optional so chunks stored before content hashing keep validating on read.
     content_hash: str | None = None
+    # Set only on figure chunks; text/table chunks leave this null.
+    figure_object_key: str | None = None
     page_number: int
     chunk_id: str
     previous_chunk_id: str | None

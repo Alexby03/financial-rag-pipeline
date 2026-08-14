@@ -1,157 +1,107 @@
+"""Document parsing via Mistral OCR 4 → Markdown pages + figures."""
+
+from __future__ import annotations
+
 import base64
-import json
 import mimetypes
+import re
 
-from app.models.enums import DocType
-from app.models.parsed import ParsedContent, ParsedPage
-from app.services.chunker import strip_code_fence
+from app.models.ocr import FigureBBoxAnnotation
+from app.models.parsed import ParsedContent, ParsedFigure, ParsedPage
 from app.services.heading_normalizer import normalize_page_markdown
-from app.services.openai_client import OpenAIService
+from app.services.mistral_ocr import MistralOcrClient, OcrPage, OcrResult
 
-MARKDOWN_SYSTEM_PROMPT = """You extract content from Financial documents.
-Return structured Markdown that preserves headings, paragraphs, and tables.
-Use # only for the document title (typically on page 1). Numbered sections follow outline depth:
-1. and 2. are ##, 2.1 and 2.2 are ###, 2.1.1 is ####.
-Financial tables MUST use Markdown table syntax with correct columns and rows.
-Signature pages are ordinary content: transcribe the printed text around them and write
-[signatur] where a handwritten signature appears, without naming or identifying the signatory.
-Do not summarize — extract faithfully."""
+# OCR embeds figures as relative markdown images that are not MinIO objects.
+_IMAGE_PLACEHOLDER = re.compile(r"!\[[^\]]*\]\(img-\d+[^)]*\)", re.IGNORECASE)
+_TABLE_PLACEHOLDER = re.compile(r"\[tbl-\d+[^\]]*\]\([^)]+\)", re.IGNORECASE)
 
-MARKDOWN_USER_PROMPT = """Extract all text and tables from this page.
-Output Markdown only."""
-
-ORG_CHART_SYSTEM_PROMPT = """You describe organizational charts for retrieval.
-Return valid JSON with keys: title, company, nodes (list of {name, role, reports_to}), summary.
-Be precise about hierarchy and reporting lines.
-Output JSON only, no markdown fences."""
-
-ORG_CHART_USER_PROMPT = (
-    "Describe this organizational chart as JSON for semantic search indexing."
-)
-
-FINANCIAL_DOC_TYPES = {DocType.FINANCIAL_REPORT, DocType.AGREEMENT, DocType.MINUTES}
-
-REFUSAL_MARKERS = (
-    "i'm sorry",
-    "i am sorry",
-    "i can't help",
-    "i cannot help",
-    "i can't assist",
-    "i cannot assist",
-    "i'm unable to",
-    "i am unable to",
-)
-REFUSAL_MAX_LENGTH = 200
-
-
-def is_refusal(markdown: str) -> bool:
-    """Vision models decline signature pages. A refusal is short and apologetic; a page is not.
-
-    Storing one would put "I'm sorry, I can't help with that." in the index as if it were
-    content, where it is indistinguishable from a real chunk to both the embedder and the reader.
-    """
-    text = markdown.strip().lower()
-    if len(text) > REFUSAL_MAX_LENGTH:
-        return False
-    return any(marker in text for marker in REFUSAL_MARKERS)
+_PLAIN_TEXT_EXTENSIONS = {".txt", ".md"}
+_PLAIN_TEXT_MIMES = {"text/plain", "text/markdown"}
 
 
 class DocumentParser:
-    def __init__(self, openai_service: OpenAIService) -> None:
-        self._openai = openai_service
+    def __init__(self, ocr_client: MistralOcrClient) -> None:
+        self._ocr = ocr_client
 
-    def parse(self, file_bytes: bytes, filename: str, doc_type: DocType) -> ParsedContent:
+    def parse(self, file_bytes: bytes, filename: str) -> ParsedContent:
         mime_type, _ = mimetypes.guess_type(filename)
-
-        if doc_type == DocType.ORG_CHART:
-            return self._parse_org_chart_image(file_bytes, mime_type or "image/png")
-
-        pages = self._parse_to_markdown_pages(
-            file_bytes,
-            mime_type or "application/octet-stream",
-            filename,
-            doc_type,
-        )
-        return ParsedContent(pages=pages, content_format="markdown")
-
-    @staticmethod
-    def _page_user_prompt(page_number: int, page_count: int) -> str:
-        return (
-            f"{MARKDOWN_USER_PROMPT}\n\n"
-            f"This is page {page_number} of {page_count}. "
-            "Continue the document's outline: use # only for the title on page 1; "
-            "numbered sections like 2.1 are ###, top-level sections like 3. are ##."
-        )
-
-    def _parse_to_markdown_pages(
-        self,
-        file_bytes: bytes,
-        mime_type: str,
-        filename: str,
-        doc_type: DocType,
-    ) -> list[ParsedPage]:
-        if mime_type.startswith("text/") and doc_type not in FINANCIAL_DOC_TYPES:
+        mime = mime_type or "application/octet-stream"
+        if mime in _PLAIN_TEXT_MIMES or filename.lower().endswith(tuple(_PLAIN_TEXT_EXTENSIONS)):
             decoded = file_bytes.decode("utf-8", errors="replace")
-            return [ParsedPage(text=decoded, page_number=1)]
-
-        if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
-            return self._parse_pdf_pages(file_bytes)
-
-        if mime_type.startswith("text/"):
-            text = file_bytes.decode("utf-8", errors="replace")
-            markdown = self._openai.chat_completion(
-                MARKDOWN_SYSTEM_PROMPT,
-                f"{MARKDOWN_USER_PROMPT}\n\nDocument:\n{text}",
+            return ParsedContent(
+                pages=[ParsedPage(text=decoded, page_number=1)],
+                content_format="markdown",
             )
-            return [ParsedPage(text=normalize_page_markdown(markdown), page_number=1)]
 
-        encoded = base64.b64encode(file_bytes).decode("utf-8")
-        markdown = self._openai.chat_completion_with_image(
-            MARKDOWN_SYSTEM_PROMPT,
-            MARKDOWN_USER_PROMPT,
-            encoded,
-            mime_type,
-        )
-        if is_refusal(markdown):
-            return []
-        return [ParsedPage(text=normalize_page_markdown(markdown), page_number=1)]
+        result = self._ocr.process(file_bytes, filename)
+        return self._from_ocr_result(result)
 
-    def _parse_pdf_pages(self, file_bytes: bytes) -> list[ParsedPage]:
-        """One request per page: the page number is only knowable while the pages are separate."""
-        page_images = self._openai.pdf_pages_to_png_base64(file_bytes)
-        page_count = len(page_images)
+    def _from_ocr_result(self, result: OcrResult) -> ParsedContent:
+        zero_based = any(page.index == 0 for page in result.pages)
         pages: list[ParsedPage] = []
-        for index, page_png in enumerate(page_images, start=1):
-            markdown = self._openai.chat_completion_with_image(
-                MARKDOWN_SYSTEM_PROMPT,
-                self._page_user_prompt(index, page_count),
-                page_png,
-                "image/png",
-            )
-            if markdown.strip() and not is_refusal(markdown):
-                pages.append(
-                    ParsedPage(
-                        text=normalize_page_markdown(markdown),
-                        page_number=index,
-                    )
-                )
-        return pages
-
-    def _parse_org_chart_image(self, file_bytes: bytes, mime_type: str) -> ParsedContent:
-        encoded = base64.b64encode(file_bytes).decode("utf-8")
-        json_text = self._openai.chat_completion_with_image(
-            ORG_CHART_SYSTEM_PROMPT,
-            ORG_CHART_USER_PROMPT,
-            encoded,
-            mime_type,
-        )
-        normalized = self._normalize_json(json_text)
+        figures: list[ParsedFigure] = []
+        for page in result.pages:
+            page_number = page.index + 1 if zero_based else page.index
+            if page_number < 1:
+                page_number = 1
+            markdown = _page_markdown(page)
+            if markdown:
+                pages.append(ParsedPage(text=markdown, page_number=page_number))
+            figures.extend(_figures_from_page(page, page_number))
         return ParsedContent(
-            pages=[ParsedPage(text=normalized, page_number=1)],
-            content_format="json",
+            pages=pages,
+            content_format="markdown",
+            figures=figures,
+            annotation=result.annotation,
         )
 
-    @staticmethod
-    def _normalize_json(raw: str) -> str:
-        parsed = json.loads(strip_code_fence(raw))
-        return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+def _page_markdown(page: OcrPage) -> str:
+    stripped = _IMAGE_PLACEHOLDER.sub("", page.markdown)
+    stripped = _TABLE_PLACEHOLDER.sub("", stripped)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip()
+    if not stripped:
+        return ""
+    return normalize_page_markdown(stripped)
+
+
+def _figures_from_page(page: OcrPage, page_number: int) -> list[ParsedFigure]:
+    figures: list[ParsedFigure] = []
+    for image in page.images:
+        image_bytes = _decode_image_base64(image.image_base64)
+        if not image_bytes:
+            continue
+        figures.append(
+            ParsedFigure(
+                page_number=page_number,
+                caption=_figure_caption(image.annotation, page_number),
+                image_bytes=image_bytes,
+            )
+        )
+    return figures
+
+
+def _figure_caption(annotation: FigureBBoxAnnotation | None, page_number: int) -> str:
+    if annotation is None:
+        return f"Figure on page {page_number}"
+    short = annotation.short_description.strip()
+    summary = annotation.summary.strip()
+    parts = [part for part in (short, summary) if part]
+    if not parts:
+        return f"Figure on page {page_number}"
+    if len(parts) == 2 and parts[0] == parts[1]:
+        return parts[0]
+    return "\n\n".join(parts)
+
+
+def _decode_image_base64(value: str) -> bytes | None:
+    payload = value.strip()
+    if not payload:
+        return None
+    if payload.startswith("data:") and "," in payload:
+        payload = payload.split(",", 1)[1]
+    try:
+        decoded = base64.b64decode(payload, validate=False)
+    except (ValueError, TypeError):
+        return None
+    return decoded or None

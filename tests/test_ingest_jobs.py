@@ -160,6 +160,29 @@ def test_ingest_endpoint_accepts_and_exposes_job_status() -> None:
         assert body["object_key"] == "tenant_1/doc-1/report.pdf"
 
 
+def test_ingest_endpoint_accepts_omitted_metadata_fields() -> None:
+    manager = IngestJobManager()
+    app = FastAPI()
+    app.include_router(ingest_routes.router)
+    app.dependency_overrides[get_ingest_job_manager] = lambda: manager
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/ingest",
+            files={"file": ("report.pdf", b"%PDF-1.7", "application/pdf")},
+            data={"tenant_id": "tenant_1", "language": "sv"},
+        )
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+
+    job = manager.get_status(job_id)
+    assert job is not None
+    stored = manager._jobs[job_id]
+    assert stored.metadata.company_name is None
+    assert stored.metadata.doc_type is None
+    assert stored.metadata.year is None
+
+
 def test_missing_ingest_job_returns_404() -> None:
     manager = IngestJobManager()
     app = FastAPI()

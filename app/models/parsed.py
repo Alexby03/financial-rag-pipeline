@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+
+from app.models.ocr import OcrDocumentAnnotation
 
 
 @dataclass(frozen=True)
@@ -11,8 +13,19 @@ class ParsedPage:
 
 
 @dataclass(frozen=True)
+class ParsedFigure:
+    """A figure with caption text for its own retrieval chunk."""
+
+    page_number: int
+    caption: str
+    image_bytes: bytes
+
+
+@dataclass(frozen=True)
 class ParsedContent:
     """Normalized parser output before chunking (see docs/ingestion_pipeline.md)."""
 
     pages: list[ParsedPage]
-    content_format: Literal["markdown", "json"]
+    content_format: Literal["markdown", "json"] = "markdown"
+    figures: list[ParsedFigure] = field(default_factory=list)
+    annotation: OcrDocumentAnnotation | None = None

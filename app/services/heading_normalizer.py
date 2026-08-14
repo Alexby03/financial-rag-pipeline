@@ -1,8 +1,7 @@
-"""Deterministic heading cleanup after per-page vision parsing.
+"""Deterministic heading cleanup after per-page OCR.
 
-Vision models guess # depth on each page in isolation. Numbered sections in Financial reports
-(2., 2.1., 3.) give us a free, local signal: depth follows the decimal outline, not how
-many hashes the model felt like using on that page.
+OCR can mis-guess `#` depth (`### 3.` under an earlier `2.3`). Numbered sections in Financial
+reports (2., 2.1., 3.) give a local signal: depth follows the decimal outline.
 """
 
 import re

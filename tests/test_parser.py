@@ -1,102 +1,180 @@
-from app.models.enums import DocType
-from app.services.parser import DocumentParser, is_refusal
+import base64
+
+from app.models.enums import Category, DocType
+from app.models.ocr import FigureBBoxAnnotation, OcrDocumentAnnotation
+from app.models.parsed import ParsedFigure, ParsedPage
+from app.services.mistral_ocr import OcrPage, OcrPageImage, OcrResult
+from app.services.parser import DocumentParser
+
+TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+TINY_PNG = base64.b64decode(TINY_PNG_B64)
 
 
-class FakeOpenAI:
-    """Stands in for OpenAIService so the parser can be exercised without network calls."""
+class FakeOcrClient:
+    """Stands in for MistralOcrClient so the parser can be exercised without network calls."""
 
-    def __init__(self, page_markdowns: list[str]) -> None:
-        self._page_markdowns = page_markdowns
-        self.parsed_images: list[str] = []
-        self.user_prompts: list[str] = []
+    def __init__(self, result: OcrResult) -> None:
+        self._result = result
+        self.calls: list[tuple[bytes, str]] = []
 
-    def pdf_pages_to_png_base64(self, pdf_bytes: bytes, dpi: int = 150) -> list[str]:
-        return [f"page-{index}" for index in range(1, len(self._page_markdowns) + 1)]
-
-    def chat_completion_with_image(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        image_base64: str,
-        mime_type: str,
-    ) -> str:
-        self.parsed_images.append(image_base64)
-        self.user_prompts.append(user_prompt)
-        return self._page_markdowns[len(self.parsed_images) - 1]
+    def process(self, file_bytes: bytes, filename: str) -> OcrResult:
+        self.calls.append((file_bytes, filename))
+        return self._result
 
 
-def test_pdf_pages_are_parsed_one_by_one() -> None:
-    openai = FakeOpenAI(["# Sammanfattning", "| Nettoomsättning | 150,0 |", "# Framtidsutsikter"])
-    parser = DocumentParser(openai_service=openai)
+def _ocr_page(
+    index: int,
+    markdown: str,
+    images: list[OcrPageImage] | None = None,
+) -> OcrPage:
+    return OcrPage(index=index, markdown=markdown, images=images or [])
 
-    parsed = parser.parse(b"%PDF-1.7", "report.pdf", DocType.FINANCIAL_REPORT)
+
+def test_ocr_pages_keep_their_numbers() -> None:
+    client = FakeOcrClient(
+        OcrResult(
+            pages=[
+                _ocr_page(1, "# Sammanfattning"),
+                _ocr_page(2, "| Nettoomsättning | 150,0 |"),
+                _ocr_page(3, "# Framtidsutsikter"),
+            ]
+        )
+    )
+    parser = DocumentParser(ocr_client=client)
+
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf")
 
     assert parsed.content_format == "markdown"
     assert [page.page_number for page in parsed.pages] == [1, 2, 3]
-    assert openai.parsed_images == ["page-1", "page-2", "page-3"]
     assert "150,0" in parsed.pages[1].text
+    assert client.calls == [(b"%PDF-1.7", "report.pdf")]
+
+
+def test_zero_based_page_indexes_become_one_based() -> None:
+    client = FakeOcrClient(
+        OcrResult(pages=[_ocr_page(0, "# Cover"), _ocr_page(1, "Body")])
+    )
+    parser = DocumentParser(ocr_client=client)
+
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf")
+
+    assert [page.page_number for page in parsed.pages] == [1, 2]
 
 
 def test_blank_pages_do_not_shift_the_numbering() -> None:
-    openai = FakeOpenAI(["# Sammanfattning", "   ", "# Framtidsutsikter"])
-    parser = DocumentParser(openai_service=openai)
+    client = FakeOcrClient(
+        OcrResult(
+            pages=[
+                _ocr_page(1, "# Sammanfattning"),
+                _ocr_page(2, "   "),
+                _ocr_page(3, "# Framtidsutsikter"),
+            ]
+        )
+    )
+    parser = DocumentParser(ocr_client=client)
 
-    parsed = parser.parse(b"%PDF-1.7", "report.pdf", DocType.FINANCIAL_REPORT)
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf")
 
     assert [page.page_number for page in parsed.pages] == [1, 3]
 
 
-def test_refused_pages_are_not_stored_as_content() -> None:
-    openai = FakeOpenAI(
-        [
-            "# Sammanfattning",
-            "I'm sorry, I can't help with that.",
-            "# Framtidsutsikter",
-        ]
+def test_image_placeholders_are_stripped_from_page_markdown() -> None:
+    client = FakeOcrClient(
+        OcrResult(
+            pages=[
+                _ocr_page(
+                    1,
+                    "# Resultat\n\n![img-0.jpeg](img-0.jpeg)\n\nSe grafen ovan.",
+                    images=[
+                        OcrPageImage(
+                            image_id="img-0.jpeg",
+                            image_base64=TINY_PNG_B64,
+                            annotation=FigureBBoxAnnotation(
+                                short_description="Revenue chart",
+                                summary="Bars for Q1-Q3 revenue in MSEK.",
+                            ),
+                        )
+                    ],
+                )
+            ]
+        )
     )
-    parser = DocumentParser(openai_service=openai)
+    parser = DocumentParser(ocr_client=client)
 
-    parsed = parser.parse(b"%PDF-1.7", "agreement.pdf", DocType.AGREEMENT)
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf")
 
-    assert [page.page_number for page in parsed.pages] == [1, 3]
-    assert all("sorry" not in page.text for page in parsed.pages)
+    assert parsed.pages[0].text == "# Resultat\n\nSe grafen ovan."
+    assert "img-0" not in parsed.pages[0].text
+    assert parsed.figures == [
+        ParsedFigure(
+            page_number=1,
+            caption="Revenue chart\n\nBars for Q1-Q3 revenue in MSEK.",
+            image_bytes=TINY_PNG,
+        )
+    ]
 
 
-def test_a_long_page_that_merely_mentions_an_apology_is_kept() -> None:
-    apology_letter = (
-        "# Brev till styrelsen\n\n"
-        "I'm sorry to inform the board that the acquisition timeline has slipped by one quarter. "
-        "The delay stems from the pending regulatory review, and management proposes the "
-        "mitigations set out in the sections below."
+def test_figures_without_bytes_are_skipped() -> None:
+    client = FakeOcrClient(
+        OcrResult(
+            pages=[
+                _ocr_page(
+                    1,
+                    "# Cover",
+                    images=[OcrPageImage(image_id="img-0.jpeg", image_base64="")],
+                )
+            ]
+        )
     )
-    assert not is_refusal(apology_letter)
+    parser = DocumentParser(ocr_client=client)
 
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf")
 
-def test_pdf_prompts_include_page_position() -> None:
-    openai = FakeOpenAI(["# Titel", "Brödtext", "# Slut"])
-    parser = DocumentParser(openai_service=openai)
-
-    parser.parse(b"%PDF-1.7", "report.pdf", DocType.FINANCIAL_REPORT)
-
-    assert "page 1 of 3" in openai.user_prompts[0]
-    assert "page 2 of 3" in openai.user_prompts[1]
-    assert "Continue the document's outline" in openai.user_prompts[2]
+    assert parsed.figures == []
+    assert parsed.pages == [ParsedPage(text="# Cover", page_number=1)]
 
 
 def test_numbered_sections_are_normalized_after_parse() -> None:
-    openai = FakeOpenAI(["## 2. Finansiell översikt", "### 3. Analys av finansiering"])
-    parser = DocumentParser(openai_service=openai)
+    client = FakeOcrClient(
+        OcrResult(
+            pages=[
+                _ocr_page(1, "## 2. Finansiell översikt"),
+                _ocr_page(2, "### 3. Analys av finansiering"),
+            ]
+        )
+    )
+    parser = DocumentParser(ocr_client=client)
 
-    parsed = parser.parse(b"%PDF-1.7", "report.pdf", DocType.FINANCIAL_REPORT)
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf")
 
     assert parsed.pages[1].text.startswith("## 3. Analys av finansiering")
 
 
-def test_plain_text_is_a_single_page() -> None:
-    openai = FakeOpenAI([])
-    parser = DocumentParser(openai_service=openai)
+def test_plain_text_is_a_single_page_without_ocr() -> None:
+    client = FakeOcrClient(OcrResult(pages=[]))
+    parser = DocumentParser(ocr_client=client)
 
-    parsed = parser.parse(b"Anteckningar", "notes.txt", DocType.OTHER)
+    parsed = parser.parse(b"Anteckningar", "notes.txt")
 
+    assert client.calls == []
     assert [page.page_number for page in parsed.pages] == [1]
     assert parsed.pages[0].text == "Anteckningar"
+    assert parsed.figures == []
+
+
+def test_document_annotation_is_passed_through() -> None:
+    annotation = OcrDocumentAnnotation(
+        company_name="SME Corp AB",
+        doc_type=DocType.FINANCIAL_REPORT,
+        category=Category.FINANCING,
+        year=2024,
+        quarter=3,
+    )
+    client = FakeOcrClient(OcrResult(pages=[_ocr_page(1, "# Report")], annotation=annotation))
+    parser = DocumentParser(ocr_client=client)
+
+    parsed = parser.parse(b"%PDF-1.7", "report.pdf")
+
+    assert parsed.annotation == annotation
