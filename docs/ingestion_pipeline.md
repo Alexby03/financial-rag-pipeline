@@ -29,8 +29,10 @@ identity. `report.pdf`, `report (1).pdf` and `@report.pdf` are three names for o
 before hashing each one produced its own complete set of chunks — paid for twice and retrieved
 twice, competing for slots in the same answer.
 
-Once a document is known to be new, it is stored before it is parsed, so the original is never
-lost if parsing fails.
+Once a document is known to be new, it is stored before it is parsed so every later step has
+an `object_key`. If parse, embed, or index fails, those MinIO objects (the original file and
+any figures) are deleted before the job is marked failed. A blob without an indexed document
+is not left behind.
 
 - `document_id` is a fresh UUID per ingest.
 - `object_key` is `{tenant_id}/{document_id}/{filename}` and is written into every chunk's
@@ -39,51 +41,47 @@ lost if parsing fails.
 - Content type is guessed from the filename so MinIO serves the file correctly when the
   frontend later opens it.
 
-## 2. Multimodal parsing
+## 2. Mistral OCR 4 parsing
 
-`DocumentParser` picks a strategy from the MIME type and `doc_type`. Output is normalized to
-`ParsedContent`: a list of `ParsedPage`, each with its text and its 1-based page number, in
-either Markdown or JSON. Inputs that have no pagination — images, plain text, org charts —
-produce a single page numbered 1.
+`DocumentParser` sends PDF, Office (DOCX/PPTX), and images to Mistral OCR 4 on Azure AI
+Foundry. The OCR response is mapped to Markdown pages plus optional figures. Plain `.txt` /
+`.md` stay local (verbatim UTF-8) because they are already text. No OpenAI model reads a
+document. Foundry rejects PDFs over 30 pages (`document_parser_too_many_pages`), so a long
+PDF is sliced with pypdf and each slice is OCR'd separately; page numbers are mapped back
+onto the original document.
 
 | Input | Strategy | Output |
 |-------|----------|--------|
-| `org_chart` (any image) | gpt-4o Vision, described as structured JSON | JSON |
-| PDF | rasterized per page, then gpt-4o Vision | Markdown |
-| Images | gpt-4o Vision | Markdown |
-| Plain text, financial doc types | gpt-4o text completion | Markdown |
-| Plain text, other doc types | passed through verbatim | Markdown |
+| PDF | Mistral OCR 4, split into 30-page slices (Foundry cap) | Markdown pages + figures |
+| DOCX, PPTX, images | Mistral OCR 4 (`/ocr`, one call) | Markdown pages + figures |
+| Plain text / Markdown | Verbatim decode | Single Markdown page |
 
-Financial doc types are `financial_report`, `agreement` and `minutes`. These skip the verbatim
-path because their tables need to be reconstructed as Markdown tables rather than kept as
-whitespace-aligned text.
+**OCR → Markdown.** Each `pages[].markdown` becomes a `ParsedPage`. Page identity comes from
+`pages[].index`, normalized to 1-based `page_number`. Empty pages are dropped and **not**
+renumbered, so citations follow the source document. `table_format` is left unset so tables stay
+inline as Markdown tables (the chunker treats a table as one unsplittable chunk). Relative
+image placeholders such as `![img-0.jpeg](img-0.jpeg)` are stripped so they never reach the
+index.
 
-**PDFs must be rasterized.** The chat completions endpoint rejects `application/pdf` as image
-input and answers 400. `OpenAIService.pdf_pages_to_png_base64` opens the PDF with PyMuPDF and
-renders every page to PNG at 150 DPI.
+**Figures are separate chunks.** OCR returns figure bytes on `pages[].images[]` when
+`include_image_base64` is on, plus a caption from bbox annotation (`short_description` /
+`summary`). Each figure is stored in MinIO under
+`{tenant_id}/{document_id}/figures/{uuid}.png` (or `.jpg` if the crop is JPEG). Ingest then
+appends one retrieval chunk whose `raw_text` is the caption and whose metadata carries
+`figure_object_key`. Text/table chunks leave that field null. Every chunk still carries the
+parent `object_key` and `page_number` — that is the 1→N link back to the original file. The
+crop stays in MinIO so query-time vision can fetch it; the UI Open button still uses the parent
+PDF.
 
-**Each page is its own request.** The page number is only knowable while the pages are still
-separate; merging them into one Markdown document destroys it, and a citation that always reads
-"p.1" is worse than useless because it looks trustworthy. So the parser sends one image per
-request and keeps the index. The cost is latency — the requests are sequential, so page count
-drives ingest time as directly as it drives token cost. A page that comes back empty is dropped
-rather than stored, which leaves a gap in the numbering instead of shifting every later page.
+**Document metadata can be filled by OCR.** The same `/ocr` call includes `document_annotation`
+with our `doc_type` / `category` enums plus `company_name`, `year`, and `quarter`. Form values
+win; blanks are filled from the annotation. After merge, `company_name`, `doc_type`,
+`category`, and `year` are required — if still missing, the job fails rather than inventing
+values. The annotation window is the first 8 pages; the whole document is still OCR'd.
 
-The parsing prompt asks for faithful extraction rather than summarization, and requires
-financial tables to use Markdown table syntax with correct columns and rows.
-
-**Refusals must never reach the index.** Vision models decline signature pages, which are
-standard in agreements and reports. The prompt therefore tells the model to transcribe the
-printed text and mark a handwritten signature as `[signatur]` without identifying the signatory.
-As a backstop, `is_refusal` drops any page whose output is short and apologetic — otherwise
-"I'm sorry, I can't help with that." is stored as an ordinary chunk, where it is
-indistinguishable from real content to the embedder and to the reader.
-
-**Heading depth is normalized locally.** Each page is parsed in isolation, so the model often
-mis-guesses `#` depth (`### 3.` under an earlier `2.3`). After parse, `heading_normalizer`
-re-levels numbered sections from the decimal outline (`3.` → `##`, `2.1` → `###`) with no extra
-model calls. The per-page prompt also tells the model to reserve `#` for the title and to treat
-the upload as page N of M. Unnumbered headings are left unchanged.
+**Heading depth is normalized locally.** Numbered sections are re-leveled from the decimal
+outline (`3.` → `##`, `2.1` → `###`) with no extra model calls. Unnumbered headings are left
+unchanged.
 
 ## 3. Chunking
 
@@ -91,8 +89,7 @@ the upload as page N of M. Unnumbered headings are left unchanged.
 The rules exist because naive splitting destroyed exactly the content we most needed to
 retrieve.
 
-- **Code fences are stripped.** The vision model wraps its answer in ` ```markdown `, which
-  otherwise leaks into the first and last chunk.
+- **Code fences are stripped** if a model ever wraps Markdown (kept as a safety net).
 - **Headings never become chunks of their own.** A heading-only chunk carries no information and
   wastes a retrieval slot. Instead headings accumulate into a breadcrumb
   (`Kvartalsrapport Q3 2024 > 2. Finansiell översikt`) that is prefixed onto every chunk beneath
@@ -108,9 +105,9 @@ retrieve.
   a table that starts on page 4 under a heading printed on page 3 still carries that heading.
   Chunking per page without this would trade a correct page number for lost context.
 
-Each chunk records the page it came from. Defaults are `chunk_size=800` and `chunk_overlap=100`.
+- **Figure chunks are not split.** Each figure is one chunk with `figure_object_key` set.
 
-JSON output (org charts) is kept whole when it fits inside `chunk_size`.
+Each chunk records the page it came from. Defaults are `chunk_size=800` and `chunk_overlap=100`.
 
 ## 4. Linking
 
@@ -135,6 +132,7 @@ Every vector point carries this payload. The `metadata.*` fields are what filter
         "source_filename": "q3_report_2024.pdf",
         "object_key": "default_tenant_test_corp_123/uuid-doc/q3_report_2024.pdf",
         "content_hash": "9dacf0e31040b708...",
+        "figure_object_key": null,
         "page_number": 14,
         "chunk_id": "uuid123",
         "previous_chunk_id": "uuid122",
@@ -175,3 +173,5 @@ Either re-ingest, or add the field as optional.
 `content_hash` was added as optional for exactly this reason. Chunks written before hashing keep
 validating, they simply carry `null` and therefore never match a duplicate check — the first
 re-ingest gives them a hash.
+
+`figure_object_key` is optional for the same reason. Text and table chunks leave it null.

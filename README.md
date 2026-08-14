@@ -1,12 +1,13 @@
 # Financial RAG Pipeline
 
-Multimodal RAG MVP for Financial documents. Stack: FastAPI, Qdrant, MinIO, OpenAI (gpt-4o + embeddings).
+Multimodal RAG MVP for Financial documents. Stack: FastAPI, Qdrant, MinIO, Mistral OCR 4, OpenAI embeddings.
 
 ## Prerequisites
 
 - Python 3.11+
 - Docker and Docker Compose
 - OpenAI API key
+- Azure AI Foundry deployment of Mistral OCR 4 (for PDF/Office/image ingest)
 
 ## Quick start
 
@@ -19,7 +20,7 @@ pip install -e ".[dev]"
 
 # 3. Configure environment
 cp .env.example .env
-# Edit .env and set OPENAI_API_KEY
+# Edit .env and set OPENAI_API_KEY plus MISTRAL_OCR_ENDPOINT / MISTRAL_OCR_API_KEY
 
 # 4. Initialize Qdrant collection
 python -m app.scripts.init_qdrant
@@ -76,11 +77,15 @@ For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exact
 
 - **Agent transparency**: every answer carries a retrieval trace showing the Qdrant filters,
   each hit with its similarity score and rerank score, how many neighbouring chunks were pulled
-  in through the double-linked list, and the reasoning summary from the answer model.
-- **Clickable sources**: each source resolves through `/sources/url` to a presigned MinIO URL.
-  PDFs and images open inline in a new tab, spreadsheets and other formats download, and a PDF
-  opens on the page the chunk was cited from. The bytes go straight from MinIO to the browser
-  rather than being proxied through the API.
+  in through the double-linked list, any figure vision readings, and the reasoning summary from
+  the answer model.
+- **Session chat**: turns stay in the Streamlit tab (`st.session_state`) and are sent as
+  `chat_history` on the next `/query`. Refreshing the tab or clicking Clear chat starts over;
+  nothing is persisted on the server.
+- **Clickable sources**: each source resolves through `/sources/url` to a presigned MinIO URL
+  for the original file. PDFs open inline on the cited page, spreadsheets and other formats
+  download. Figure chunks also open the parent PDF, not the stored crop. The bytes go straight
+  from MinIO to the browser rather than being proxied through the API.
 - **Upload tab**: accepts a document, then polls the ingest job while a non-dismissible toast
   shows queue/stage progress until indexing finishes.
 
@@ -109,7 +114,10 @@ curl "http://localhost:8000/ingest/jobs/<job_id>"
 
 Documents are identified by a sha256 of their bytes, not by filename. The worker reports
 `status="duplicate"` with the existing chunk count when the tenant already has that content,
-without a second vision pass. Jobs live only in the API process memory.
+without a second OCR pass. Jobs live only in the API process memory.
+
+Company name, document type, category, year, and quarter may be omitted on upload; OCR fills
+them from the document when it can. If they are still blank after parse, the job fails.
 
 ## Query example
 

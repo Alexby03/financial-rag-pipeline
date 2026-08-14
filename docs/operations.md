@@ -15,11 +15,25 @@ optional.
 **`AttributeError: 'QdrantClient' object has no attribute 'search'`.**
 `search` was removed in qdrant-client 1.16. Use `query_points` and read `response.points`.
 
-**Vision parsing answers 400 on a PDF.**
-The chat completions endpoint does not accept `application/pdf` as image input. PDFs are
-rasterized to PNG per page before being sent; if this reappears, check that
-`DocumentParser._parse_pdf_pages` is still being taken and that no caller passes raw PDF bytes
-to `chat_completion_with_image`, which now only handles a single image.
+**Mistral OCR answers 404 or times out.**
+Ingest needs `MISTRAL_OCR_ENDPOINT` and `MISTRAL_OCR_API_KEY`. A host ending in
+`services.ai.azure.com` is turned into `/providers/mistral/azure/ocr`; a serverless
+`models.ai.azure.com` host becomes `/v1/ocr`. A 404 is almost always the wrong host, or
+`MISTRAL_OCR_MODEL` not matching the catalog id (`mistral-ocr-4-0`). Data Zone / SKU
+labels such as `DataZoneStandard (Swedencentral)` are not the model name. A timeout means
+the document exceeded `MISTRAL_OCR_TIMEOUT_SECONDS` (default 300). The worker marks the job
+`failed` with the error string — check `/ingest/jobs/{id}`.
+
+**OCR answers 400 `document_parser_too_many_pages`.**
+Foundry caps a single OCR request at 30 pages. PDFs are split into 30-page slices before the
+call (`MISTRAL_OCR_MAX_PAGES`). If this reappears, the file is not a PDF we could slice
+(Office/PPTX), or slicing failed and the whole file was sent. A failed job deletes the MinIO
+object it uploaded; leftovers from before that rollback have to be removed in the console.
+
+**Ingest job fails with `Could not determine company_name, ...`.**
+OCR `document_annotation` did not fill the blanks and the upload form left them empty. Fill
+them on upload, or re-try with a document that has a readable title page. Do not expect `.txt`
+passthrough to infer metadata.
 
 **Ingest job returns `status="duplicate"` and indexes nothing.**
 Expected. The same tenant already has chunks with that content hash, so the worker skipped
@@ -31,10 +45,17 @@ Chunks stored before content hashing carry `content_hash: null` and never match 
 check, so a re-ingest under a different filename lands alongside them. Re-ingest once under each
 name, or delete the hash-less chunks.
 
-**A chunk contains "I'm sorry, I can't help with that."**
-A vision refusal was stored as content. `is_refusal` in `DocumentParser` drops short apologetic
-pages, so a refusal that gets through is either longer than `REFUSAL_MAX_LENGTH` or phrased
-outside `REFUSAL_MARKERS`.
+**The answer ignores a chart that was cited as a source.**
+OCR captions describe the figure; they often omit the plotted number. Query-time vision
+downloads the crop from MinIO and injects a reading into the reasoning context. If the trace
+shows no figure readings, `OPENAI_VISION_MODEL` is blank, the crop is missing, or the figure
+chunk was never retrieved. A vision error is on `trace.figure_readings[].error` and the query
+still answers from text.
+
+**Figure crop is missing for vision.**
+`figure_object_key` is set only when OCR returned `image_base64` for that figure. A detected
+region without bytes is skipped rather than storing a broken key. The Open button still uses
+the parent PDF.
 
 **Rerank answers 404 `DeploymentNotFound`.**
 `COHERE_RERANK_MODEL` does not match the Foundry deployment name. The URL and API key can be
@@ -76,10 +97,10 @@ body. Qdrant filtering and the object-key prefix check enforce isolation *given*
 which protects against accidental cross-tenant reads but not against a caller who simply sends a
 different id. This is the single largest gap before anything resembling production.
 
-**Page numbers are only as good as the parse.** They are real now — pages are parsed separately
-and the index is carried through to the chunk — but a page whose parse comes back empty is
-skipped, so numbering follows the source document rather than the stored chunks. Non-paginated
-inputs (images, plain text, org charts) are always page 1.
+**Page numbers are only as good as the parse.** They come from OCR page indexes and are carried
+through to the chunk — but a page whose markdown comes back empty is skipped, so numbering
+follows the source document rather than the stored chunks. Non-paginated inputs (images, plain
+text) are always page 1.
 
 **Duplicate detection is byte-exact.** The content hash catches the same file uploaded twice
 under different names, which is the common and expensive case. It does not catch the same

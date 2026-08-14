@@ -9,10 +9,11 @@ An MVP for a multimodal RAG system in the Financial industry.
 | API | FastAPI |
 | Vector database | Qdrant |
 | Blob storage | MinIO |
-| Document parsing | gpt-4o Vision, with PyMuPDF rasterizing PDFs first |
+| Document parsing | Mistral OCR 4 on Azure AI Foundry |
 | Embeddings | OpenAI `text-embedding-3-small`, 1536 dimensions |
 | Reranking | Cohere Rerank via Azure AI Foundry (optional) |
 | Answer generation | OpenAI reasoning model through the Responses API |
+| Figure reading | OpenAI vision model on stored MinIO crops, text fed back to the reasoner |
 | Frontend | Streamlit |
 
 Qdrant and MinIO run through Docker Compose. The API process hosts an in-memory ingest worker
@@ -25,10 +26,11 @@ own.
                  ┌───────────┐
    upload  ──────▶  FastAPI  ├──queue──▶ lifespan worker
                  │  (202)    │              │
-                 │           ├──────────────┼──▶ MinIO        (original files)
+                 │           ├──────────────┼──▶ MinIO        (original files + figure crops)
    job status ───▶           │              ├──▶ Qdrant       (chunks + metadata)
-   question ─────▶           ├──────────────┼──▶ OpenAI       (vision, embeddings, answers)
-                 └─────┬─────┘──────────────┴──▶ Cohere       (reranking)
+   question ─────▶           ├──────────────┼──▶ OpenAI       (embeddings, vision, answers)
+                 └─────┬─────┘──────────────┼──▶ Mistral OCR  (ingest parse)
+                       │                    └──▶ Cohere       (reranking)
                        │
                  presigned URL
                        │
@@ -37,8 +39,8 @@ own.
 
 Two properties are worth noting in that picture. File bytes never travel back through the API:
 the API hands the browser a short-lived presigned URL and MinIO serves the file directly.
-And every external dependency except Qdrant and OpenAI is optional — the system runs with
-reranking switched off.
+And every external dependency except Qdrant, OpenAI, and Mistral OCR is optional — the system
+runs with reranking switched off. Plain `.txt` / `.md` ingest does not need OCR.
 
 ## Multi-tenancy
 
