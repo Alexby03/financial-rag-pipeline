@@ -326,7 +326,9 @@ with upload_tab:
     with st.form("ingest"):
         uploaded = st.file_uploader("File", type=["pdf", "png", "jpg", "jpeg", "xlsx", "txt", "md"])
         company_name = st.text_input("Company name", value="SME Corp AB")
-        upload_doc_type = st.selectbox("Document type", options=list(DocType), key="upload_doc_type")
+        upload_doc_type = st.selectbox(
+            "Document type", options=list(DocType), key="upload_doc_type"
+        )
         upload_category = st.selectbox("Category", options=list(Category), key="upload_category")
         upload_year = st.number_input("Year", min_value=1990, max_value=2100, value=2024, step=1)
         upload_quarter = st.selectbox(
