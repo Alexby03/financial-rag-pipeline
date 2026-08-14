@@ -212,21 +212,21 @@ def fetch_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
 
 def toast_ingest_progress(job: IngestJobStatusResponse) -> None:
     if job.status == "queued":
-        st.toast("Upload queued...", icon="⏳", duration="infinite")
+        st.toast("Upload queued...", icon=":material/progress_activity:", duration="infinite")
         return
     if job.status == "running":
         label = STAGE_LABELS.get(job.stage or "", "Processing the document...")
-        st.toast(label, icon="⏳", duration="infinite")
+        st.toast(label, icon=":material/progress_activity:", duration="infinite")
         return
     if job.status == "completed":
-        st.toast("Document uploaded", icon="✅", duration="infinite")
+        st.toast("Document uploaded", icon=":material/check_circle:", duration="infinite")
         return
     if job.status == "duplicate":
-        st.toast("Document was already indexed", icon="ℹ️", duration="infinite")
+        st.toast("Document was already indexed", icon=":material/info:", duration="infinite")
         return
     st.toast(
         f"Upload failed: {job.error or 'unknown error'}",
-        icon="❌",
+        icon=":material/error:",
         duration="infinite",
     )
 
