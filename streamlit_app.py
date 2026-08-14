@@ -93,8 +93,9 @@ def check_health(api_url: str) -> dict[str, str] | None:
 
 def render_trace(response: QueryResponse) -> None:
     trace = response.trace
+    vision_part = f", {trace.vision_ms} ms vision" if trace.figure_readings else ""
     label = (
-        f"Agent reasoning — {trace.retrieval_ms} ms retrieval, "
+        f"Agent reasoning — {trace.retrieval_ms} ms retrieval{vision_part}, "
         f"{trace.generation_ms} ms answer, {trace.context_chunk_count} chunks in context"
     )
     with st.expander(label):
@@ -145,7 +146,28 @@ def render_trace(response: QueryResponse) -> None:
         else:
             st.caption("No neighbors were fetched.")
 
-        st.markdown(f"**5. Answer with `{trace.answer_model}`**")
+        st.markdown("**5. Figure vision**")
+        if trace.figure_readings:
+            applied = sum(1 for reading in trace.figure_readings if reading.applied)
+            model_note = f" `{trace.vision_model}`" if trace.vision_model else ""
+            st.caption(
+                f"{applied} of {len(trace.figure_readings)} retrieved figures were read"
+                f"{model_note} in {trace.vision_ms} ms."
+            )
+            for reading in trace.figure_readings:
+                heading = f"{reading.source_filename} p.{reading.page_number}"
+                if reading.applied:
+                    with st.expander(heading, expanded=True):
+                        st.markdown(reading.reading)
+                else:
+                    st.warning(f"{heading}: {reading.error}")
+        else:
+            st.caption(
+                "No figure crops were read — either no figure chunks were retrieved, "
+                "or `OPENAI_VISION_MODEL` is blank."
+            )
+
+        st.markdown(f"**6. Answer with `{trace.answer_model}`**")
         if trace.reasoning_summary:
             st.markdown(trace.reasoning_summary)
         else:
@@ -160,7 +182,10 @@ def render_source(source: SourceChunk, api_url: str, index: int) -> None:
     with st.container(border=True):
         header, action = st.columns([4, 1])
         with header:
-            st.markdown(f"**{index}. {meta.source_filename}** — page {meta.page_number}")
+            label = "figure" if meta.figure_object_key else "page"
+            st.markdown(
+                f"**{index}. {meta.source_filename}** — {label} {meta.page_number}"
+            )
             st.caption(f"Score {score} · {meta.doc_type.value} · {meta.category.value}")
         with action:
             link = fetch_source_url(api_url, meta.tenant_id, meta.object_key)
@@ -178,13 +203,37 @@ def render_source(source: SourceChunk, api_url: str, index: int) -> None:
             st.markdown(source.raw_text)
 
 
+def chat_history_payload(messages: list[dict[str, object]]) -> list[dict[str, str]]:
+    """Prior turns for /query — assistant content is the answer text only."""
+    history: list[dict[str, str]] = []
+    for message in messages:
+        role = str(message["role"])
+        if role == "user":
+            history.append({"role": "user", "content": str(message["content"])})
+            continue
+        content = message["content"]
+        if isinstance(content, QueryResponse):
+            history.append({"role": "assistant", "content": content.answer})
+        else:
+            parsed = QueryResponse.model_validate(content)
+            history.append({"role": "assistant", "content": parsed.answer})
+    return history
+
+
+def as_query_response(content: object) -> QueryResponse:
+    if isinstance(content, QueryResponse):
+        return content
+    return QueryResponse.model_validate(content)
+
+
 def render_answer(response: QueryResponse, api_url: str) -> None:
     st.markdown(response.answer)
     render_trace(response)
     if response.sources:
-        st.markdown("**Sources**")
-        for index, source in enumerate(response.sources, start=1):
-            render_source(source, api_url, index)
+        label = f"Sources — {len(response.sources)}"
+        with st.expander(label):
+            for index, source in enumerate(response.sources, start=1):
+                render_source(source, api_url, index)
 
 
 def run_query(api_url: str, payload: dict[str, object]) -> QueryResponse:
@@ -271,6 +320,9 @@ with st.sidebar:
     top_k = st.slider("Number of chunks (top_k)", min_value=1, max_value=20, value=5)
     expand_neighbors = st.checkbox("Fetch neighboring chunks", value=True)
     use_rerank = st.checkbox("Rerank with Cohere Rerank", value=True)
+    if st.button("Clear chat", width="stretch"):
+        st.session_state.messages = []
+        st.rerun()
 
     with st.spinner("Checking API..."):
         health = check_health(api_url)
@@ -290,10 +342,11 @@ with chat_tab:
             if message["role"] == "user":
                 st.markdown(message["content"])
             else:
-                render_answer(message["content"], api_url)
+                render_answer(as_query_response(message["content"]), api_url)
 
     question = st.chat_input("Ask something about your documents")
     if question:
+        prior_history = chat_history_payload(st.session_state.messages)
         st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
             st.markdown(question)
@@ -313,10 +366,12 @@ with chat_tab:
                             "top_k": top_k,
                             "expand_neighbors": expand_neighbors,
                             "rerank": use_rerank,
+                            "chat_history": prior_history,
                         },
                     )
                 except httpx.HTTPError as error:
                     st.error(f"Query failed: {error}")
+                    st.session_state.messages.pop()
                 else:
                     render_answer(answer, api_url)
                     st.session_state.messages.append({"role": "assistant", "content": answer})
@@ -324,17 +379,27 @@ with chat_tab:
 with upload_tab:
     st.subheader("Upload document")
     with st.form("ingest"):
-        uploaded = st.file_uploader("File", type=["pdf", "png", "jpg", "jpeg", "xlsx", "txt", "md"])
-        company_name = st.text_input("Company name", value="SME Corp AB")
-        upload_doc_type = st.selectbox(
-            "Document type", options=list(DocType), key="upload_doc_type"
+        uploaded = st.file_uploader(
+            "File", type=["pdf", "png", "jpg", "jpeg", "docx", "pptx", "xlsx", "txt", "md"]
         )
-        upload_category = st.selectbox("Category", options=list(Category), key="upload_category")
-        upload_year = st.number_input("Year", min_value=1990, max_value=2100, value=2024, step=1)
+        company_name = st.text_input("Company name", value="", placeholder="Auto from document")
+        upload_doc_type = st.selectbox(
+            "Document type",
+            options=[None, *DocType],
+            format_func=lambda x: "Auto" if x is None else x,
+            key="upload_doc_type",
+        )
+        upload_category = st.selectbox(
+            "Category",
+            options=[None, *Category],
+            format_func=lambda x: "Auto" if x is None else x,
+            key="upload_category",
+        )
+        upload_year = st.number_input("Year", min_value=1990, max_value=2100, value=None, step=1)
         upload_quarter = st.selectbox(
             "Quarter",
             options=[None, 1, 2, 3, 4],
-            format_func=lambda x: "—" if x is None else f"Q{x}",
+            format_func=lambda x: "Auto" if x is None else f"Q{x}",
         )
         language = st.text_input("Language", value="sv")
         submitted = st.form_submit_button("Upload and index")
@@ -345,18 +410,24 @@ with upload_tab:
         else:
             with st.spinner("Queueing the upload..."):
                 try:
+                    ingest_data: dict[str, object] = {
+                        "tenant_id": tenant_id,
+                        "language": language,
+                    }
+                    if company_name.strip():
+                        ingest_data["company_name"] = company_name.strip()
+                    if upload_doc_type is not None:
+                        ingest_data["doc_type"] = upload_doc_type.value
+                    if upload_category is not None:
+                        ingest_data["category"] = upload_category.value
+                    if upload_year:
+                        ingest_data["year"] = int(upload_year)
+                    if upload_quarter:
+                        ingest_data["quarter"] = upload_quarter
                     accepted = submit_ingest(
                         api_url,
                         files={"file": (uploaded.name, uploaded.getvalue(), uploaded.type)},
-                        data={
-                            "tenant_id": tenant_id,
-                            "company_name": company_name,
-                            "doc_type": upload_doc_type.value,
-                            "category": upload_category.value,
-                            "year": int(upload_year),
-                            "quarter": upload_quarter if upload_quarter else "",
-                            "language": language,
-                        },
+                        data=ingest_data,
                     )
                     result = wait_for_ingest_job(api_url, accepted.job_id)
                 except httpx.HTTPError as error:

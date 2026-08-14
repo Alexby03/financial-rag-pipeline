@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from streamlit.testing.v1 import AppTest
@@ -110,8 +111,63 @@ def test_chat_renders_answer_trace_and_source_link() -> None:
         assert "reranked 20 candidates" in captions
         assert "rerank 0.950" in captions
         assert "page 4" in rendered
+        expanders = " ".join(expander.label for expander in app.expander)
+        assert "Sources — 1" in expanders
+        assert any(expander.label.startswith("Agent reasoning") for expander in app.expander)
         links = list(app.get("link_button"))
         assert links and links[0].proto.url == f"{SOURCE_URL_RESPONSE['url']}#page=4"
+
+
+def test_figure_source_opens_parent_pdf_page() -> None:
+    figure_response = QUERY_RESPONSE.model_copy(deep=True)
+    pdf_key = "tenant_1/doc-fig/prospekt.pdf"
+    figure_response.sources[0].metadata.object_key = pdf_key
+    figure_response.sources[0].metadata.figure_object_key = "tenant_1/doc-fig/figures/chart.png"
+    figure_response.sources[0].metadata.source_filename = "prospekt.pdf"
+    figure_response.sources[0].metadata.page_number = 19
+    requested: list[str] = []
+
+    def object_key_from_request(url: str, kwargs: dict[str, Any]) -> str:
+        params = kwargs.get("params") or {}
+        if params.get("object_key"):
+            return str(params["object_key"])
+        parsed = urlparse(url)
+        return parse_qs(parsed.query).get("object_key", [""])[0]
+
+    def figure_get(url: str, **kwargs: Any) -> httpx.Response:
+        request = httpx.Request("GET", url)
+        if url.rstrip("/").endswith("/health"):
+            return httpx.Response(
+                200, json={"status": "ok", "qdrant": "ok", "minio": "ok"}, request=request
+            )
+        object_key = object_key_from_request(url, kwargs)
+        requested.append(object_key)
+        payload = {
+            "url": f"http://localhost:9000/rag-documents/{object_key}?signed",
+            "filename": object_key.rsplit("/", 1)[-1],
+            "disposition": "inline",
+            "expires_in_seconds": 900,
+        }
+        return httpx.Response(200, json=payload, request=request)
+
+    def figure_post(url: str, **kwargs: Any) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json=figure_response.model_dump(mode="json"), request=request)
+
+    with patch("httpx.get", side_effect=figure_get), patch("httpx.post", side_effect=figure_post):
+        app = AppTest.from_file(APP_PATH, default_timeout=30)
+        app.run()
+        app.chat_input[0].set_value("Vad visar grafen?").run()
+        assert not app.exception
+
+        rendered = " ".join(element.value for element in app.markdown)
+        assert "figure 19" in rendered
+        assert pdf_key in requested
+        assert not any("figures/chart" in key for key in requested)
+        links = list(app.get("link_button"))
+        assert links
+        assert links[0].proto.url.endswith("prospekt.pdf?signed#page=19")
+        assert "figures/chart" not in links[0].proto.url
 
 
 def test_rerank_fallback_is_surfaced_as_a_warning() -> None:
