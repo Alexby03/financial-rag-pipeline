@@ -53,7 +53,6 @@ st.markdown(
     @keyframes rag-spin {
       to { transform: rotate(360deg); }
     }
-    div[data-testid="stToast"] { pointer-events: none; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -232,7 +231,7 @@ def toast_ingest_progress(job: IngestJobStatusResponse) -> None:
 
 
 def wait_for_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
-    """Poll until the lifespan worker finishes; toast updates stay non-dismissible via CSS."""
+    """Poll until the lifespan worker finishes; toasts stay until dismissed or replaced."""
     deadline = time.monotonic() + INGEST_POLL_TIMEOUT_SECONDS
     last_key: tuple[str, str | None] | None = None
     while True:
