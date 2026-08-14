@@ -33,6 +33,26 @@ st.set_page_config(page_title="Financial RAG", layout="wide")
 st.markdown(
     """
     <style>
+    /* Streamlit's toolbar cycles people/sport icons while a script runs; use a CSS spinner. */
+    [data-testid="stStatusWidgetRunningManIcon"] { display: none !important; }
+    [data-testid="stStatusWidgetRunningIcon"] {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    [data-testid="stStatusWidgetRunningIcon"]::before {
+      content: "";
+      width: 1rem;
+      height: 1rem;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: rag-spin 0.7s linear infinite;
+    }
+    @keyframes rag-spin {
+      to { transform: rotate(360deg); }
+    }
     div[data-testid="stToast"] { pointer-events: none; }
     </style>
     """,
@@ -253,7 +273,8 @@ with st.sidebar:
     expand_neighbors = st.checkbox("Hämta angränsande chunkar", value=True)
     use_rerank = st.checkbox("Ranka om med Cohere Rerank", value=True)
 
-    health = check_health(api_url)
+    with st.spinner("Checking API..."):
+        health = check_health(api_url)
     if health is None:
         st.error("Når inte API:t")
     else:
