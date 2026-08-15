@@ -46,10 +46,12 @@ is not left behind.
 `DocumentParser` sends PDF, Office (DOCX/PPTX), and images to Mistral OCR 4 on Azure AI
 Foundry. The OCR response is mapped to Markdown pages plus optional figures. Plain `.txt` /
 `.md` stay local (verbatim UTF-8) because they are already text. Swedish SIE accounting
-files (`.sie` / `.si` / `.se`) are parsed locally into Markdown summaries without OCR. No
-OpenAI model reads a document. Foundry rejects PDFs over 30 pages
-(`document_parser_too_many_pages`), so a long PDF is sliced with pypdf and each slice is
-OCR'd separately; page numbers are mapped back onto the original document.
+files (`.sie` / `.si` / `.se`) are parsed locally into Markdown summaries without OCR.
+Bolagsverket-style XHTML is printed to a multi-page PDF (page containers / CSS breaks), then
+OCR'd in the same 30-page slices as a normal PDF. No OpenAI model reads a document. Foundry
+rejects PDFs over 30 pages (`document_parser_too_many_pages`), so a long PDF is sliced with
+pypdf and each slice is OCR'd separately; page numbers are mapped back onto the original
+document.
 
 | Input | Strategy | Output |
 |-------|----------|--------|
@@ -57,6 +59,14 @@ OCR'd separately; page numbers are mapped back onto the original document.
 | DOCX, PPTX, images | Mistral OCR 4 (`/ocr`, one call) | Markdown pages + figures |
 | Plain text / Markdown | Verbatim decode | Single Markdown page |
 | SIE (`.sie`, `.si`, `.se`) | Lean vendored SIE 4 parser → LLM summaries (no OCR) | Markdown summary pages |
+| XHTML / HTML | Headless Edge/Chrome print → PDF → OCR (30-page slices) | Markdown pages + figures |
+
+**XHTML annual reports.** Bolagsverket iXBRL files are one long scrollable document. Ingest
+detects print pages via containers such as `rb-page`, `ar-page`, and `pagebreak_before` (or
+falls back to the browser honouring CSS `@page` / `page-break-*`). Each page is printed to
+PDF with headless Edge or Chrome (`CHROME_PATH` / `EDGE_PATH` override), the pages are merged,
+and the result reuses the PDF OCR path — including 30-page Foundry batches. The original
+`.xhtml` bytes stay in MinIO; Open still points at that source file.
 
 **SIE accounting files.** Swedish SIE 4 exports are tagged plain text (usually CP437). The
 raw bytes are stored in MinIO like any other upload. Parsing never calls OCR: a lean
