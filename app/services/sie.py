@@ -6,6 +6,7 @@ Parsing uses the lean vendored magnusfroste sie-parser (see NOTICE.md).
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -68,7 +69,12 @@ def _annotation_from_sie(llm_data: dict[str, Any]) -> OcrDocumentAnnotation:
     metadata = llm_data.get("metadata") or {}
     summary = llm_data.get("summary") or {}
     company = _filled(metadata.get("company_name")) or _filled(summary.get("company_name"))
-    year = _year_from_metadata(metadata) or _year_from_summary(summary)
+    # Never use #PROGRAM version (e.g. Norstedts "2011.2.1") as the fiscal year.
+    year = (
+        _year_from_metadata(metadata)
+        or _year_from_summary(summary)
+        or _year_from_transactions(llm_data)
+    )
     return OcrDocumentAnnotation(
         company_name=company,
         doc_type=DocType.ACCOUNTING_DATA,
@@ -78,12 +84,24 @@ def _annotation_from_sie(llm_data: dict[str, Any]) -> OcrDocumentAnnotation:
 
 
 def _year_from_metadata(metadata: dict[str, Any]) -> int | None:
-    for key in ("rar", "current_fiscal_year_start_year", "current_fiscal_year_end_year"):
+    for key in (
+        "rar",
+        "taxar",
+        "omfattn",
+        "current_fiscal_year_start_year",
+        "current_fiscal_year_end_year",
+    ):
         parsed = _year_from_value(metadata.get(key))
         if parsed is not None:
             return parsed
 
-    for key in ("financial_year_start", "financial_year_end", "generation_date", "gen_date"):
+    for key in (
+        "financial_year_start",
+        "financial_year_end",
+        "fiscal_year",
+        "generation_date",
+        "gen_date",
+    ):
         parsed = _year_from_value(metadata.get(key))
         if parsed is not None:
             return parsed
@@ -105,7 +123,7 @@ def _year_from_metadata(metadata: dict[str, Any]) -> int | None:
         for year_data in ordered:
             if not isinstance(year_data, dict):
                 continue
-            for key in ("start_date", "end_date"):
+            for key in ("end_date", "start_date"):
                 parsed = _year_from_value(year_data.get(key))
                 if parsed is not None:
                     return parsed
@@ -116,10 +134,38 @@ def _year_from_summary(summary: dict[str, Any]) -> int | None:
     return _year_from_value(summary.get("period"))
 
 
+def _year_from_transactions(llm_data: dict[str, Any]) -> int | None:
+    """Fall back to the latest YYYYMMDD date on vouchers / samples."""
+    years: list[int] = []
+    for sample in llm_data.get("transaction_samples") or []:
+        parsed = _year_from_value(sample.get("date") if isinstance(sample, dict) else None)
+        if parsed is not None:
+            years.append(parsed)
+    for verification in llm_data.get("all_transactions") or llm_data.get("verifications") or []:
+        if not isinstance(verification, dict):
+            continue
+        parsed = _year_from_value(verification.get("date"))
+        if parsed is not None:
+            years.append(parsed)
+        for transaction in verification.get("transactions") or []:
+            if not isinstance(transaction, dict):
+                continue
+            parsed = _year_from_value(transaction.get("date"))
+            if parsed is not None:
+                years.append(parsed)
+    return max(years) if years else None
+
+
 def _year_from_value(value: Any) -> int | None:
+    """Pick a calendar year from SIE dates like 20241231 or 2024-12-31.
+
+    Ignores dotted software versions such as 2011.2.1 from #PROGRAM.
+    """
     if value is None:
         return None
     text = str(value).strip()
+    if re.fullmatch(r"\d+\.\d+(\.\d+)*", text):
+        return None
     for index in range(len(text) - 3):
         chunk = text[index : index + 4]
         if chunk.isdigit():

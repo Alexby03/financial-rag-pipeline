@@ -56,6 +56,10 @@ class SIEParser:
                     self._parse_sietyp(line)
                 elif line.startswith("#RAR"):
                     self._parse_rar(line)
+                elif line.startswith("#OMFATTN"):
+                    self._parse_omfattn(line)
+                elif line.startswith("#TAXAR"):
+                    self._parse_taxar(line)
                 elif line.startswith("#FNAMN"):
                     self._parse_fnamn(line)
                 elif line.startswith("#ORGNR"):
@@ -120,35 +124,21 @@ class SIEParser:
         return match.group(1) if match else ""
 
     def _extract_values(self, line: str) -> list[str]:
-        """Extract all values from a line, respecting quoted strings."""
+        """Split a SIE line into tokens; tabs and spaces are both delimiters."""
         values: list[str] = []
-        parts = line.split(" ")
-        i = 0
-
-        while i < len(parts):
-            if parts[i].startswith('"'):
-                quoted_value = parts[i]
-                while i + 1 < len(parts) and not quoted_value.endswith('"'):
-                    i += 1
-                    quoted_value += " " + parts[i]
-                if quoted_value.endswith('"'):
-                    values.append(quoted_value[1:-1])
-                else:
-                    values.append(quoted_value[1:])
-            elif parts[i]:
-                values.append(parts[i].strip())
-            i += 1
-
+        for match in re.finditer(r'"([^"]*)"|(\S+)', line.strip()):
+            quoted, bare = match.groups()
+            values.append(quoted if quoted is not None else bare)
         return values
 
     def _parse_flagga(self, line: str) -> None:
-        parts = line.split(" ")
+        parts = self._extract_values(line)
         if len(parts) > 1:
             self.data["metadata"]["flagga"] = parts[1]
 
     def _parse_program(self, line: str) -> None:
         values = self._extract_values(line)
-        # values[0] is PROGRAM; remaining are name / version
+        # values[0] is #PROGRAM; remaining are name / version (version is NOT a fiscal year).
         name = values[1] if len(values) > 1 else self._extract_quoted_string(line)
         version = values[2] if len(values) > 2 else None
         self.data["metadata"]["program"] = name
@@ -158,17 +148,18 @@ class SIEParser:
         self.program_info["version"] = version
 
     def _parse_format(self, line: str) -> None:
-        parts = line.split(" ")
+        parts = self._extract_values(line)
         if len(parts) > 1:
             self.data["metadata"]["format"] = parts[1]
 
     def _parse_gen(self, line: str) -> None:
-        parts = line.split(" ")
+        parts = self._extract_values(line)
         if len(parts) > 1:
             self.data["metadata"]["gen_date"] = parts[1]
+            self.data["metadata"]["generation_date"] = parts[1]
 
     def _parse_sietyp(self, line: str) -> None:
-        parts = line.split(" ")
+        parts = self._extract_values(line)
         if len(parts) > 1:
             self.data["metadata"]["sie_type"] = parts[1]
 
@@ -176,18 +167,27 @@ class SIEParser:
         self.data["metadata"]["company_name"] = self._extract_quoted_string(line)
 
     def _parse_orgnr(self, line: str) -> None:
-        if line.startswith("#"):
-            line = line[1:].strip()
-        parts = line.split(" ")
+        parts = self._extract_values(line)
         if len(parts) > 1:
-            org_number = parts[1].strip()
+            org_number = parts[1]
             self.data["metadata"]["organization_number"] = org_number
             self.data["metadata"]["org_number"] = org_number
 
-    def _parse_rar(self, line: str) -> None:
-        if line.startswith("#"):
-            line = line[1:].strip()
+    def _parse_omfattn(self, line: str) -> None:
+        """Parse #OMFATTN — period end date the balances cover."""
         parts = self._extract_values(line)
+        if len(parts) > 1:
+            self.data["metadata"]["omfattn"] = parts[1]
+
+    def _parse_taxar(self, line: str) -> None:
+        """Parse #TAXAR — taxation year."""
+        parts = self._extract_values(line)
+        if len(parts) > 1:
+            self.data["metadata"]["taxar"] = parts[1]
+
+    def _parse_rar(self, line: str) -> None:
+        parts = self._extract_values(line)
+        # Expect: #RAR year_id start end
         if len(parts) < 3:
             return
 
@@ -208,7 +208,10 @@ class SIEParser:
             formatted_end = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
             self.data["metadata"]["fiscal_year"] = f"{formatted_start} to {formatted_end}"
 
-        if str(year_id) == "0":
+        # Current year is year_id 0; if that is missing, still record the first RAR seen.
+        is_current = str(year_id) == "0"
+        already_set = bool(self.data["metadata"].get("financial_year_start"))
+        if is_current or not already_set:
             self.data["metadata"]["current_fiscal_year"] = {
                 "start_date": start_date,
                 "end_date": end_date,

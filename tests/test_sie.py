@@ -62,6 +62,36 @@ def test_sie_annotation_defaults_category_and_finds_year_in_period() -> None:
     assert annotation.company_name == "Sparse AB"
 
 
+def test_norstedts_tab_separated_sie_fills_year_not_program_version() -> None:
+    """Norstedts exports use tabs; #PROGRAM 2011.2.1 is software, not fiscal year."""
+    fixture = Path(__file__).parent / "fixtures" / "norstedts_tabs.se"
+    # Keep literal tabs from the fixture (do not normalize to spaces).
+    parsed = parse_sie_bytes(fixture.read_bytes())
+
+    assert parsed.annotation is not None
+    assert parsed.annotation.company_name == "Testbolaget AB"
+    assert parsed.annotation.year == 2011
+    assert parsed.annotation.category == Category.FINANCING
+
+
+def test_program_version_is_never_used_as_year() -> None:
+    from app.services.sie import _annotation_from_sie, _year_from_value
+
+    assert _year_from_value("2011.2.1") is None
+    annotation = _annotation_from_sie(
+        {
+            "metadata": {
+                "company_name": "X AB",
+                "program": "Norstedts Bokslut",
+                "program_version": "2011.2.1",
+                "gen_date": "20120315",
+            },
+            "summary": {},
+        }
+    )
+    assert annotation.year == 2012
+
+
 def test_document_parser_routes_sie_without_ocr() -> None:
     client = FakeOcrClient()
     parser = DocumentParser(ocr_client=client)
