@@ -396,7 +396,6 @@ with upload_tab:
                 "se",
             ],
         )
-        )
         company_name = st.text_input("Company name", value="", placeholder="Auto from document")
         upload_doc_type = st.selectbox(
             "Document type",
