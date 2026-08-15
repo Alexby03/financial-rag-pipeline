@@ -394,6 +394,9 @@ with upload_tab:
                 "sie",
                 "si",
                 "se",
+                "xhtml",
+                "html",
+                "htm",
             ],
         )
         company_name = st.text_input("Company name", value="", placeholder="Auto from document")

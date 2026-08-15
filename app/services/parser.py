@@ -8,12 +8,14 @@ from __future__ import annotations
 import base64
 import mimetypes
 import re
+from pathlib import Path
 
 from app.models.ocr import FigureBBoxAnnotation
 from app.models.parsed import ParsedContent, ParsedFigure, ParsedPage
 from app.services.heading_normalizer import normalize_page_markdown
 from app.services.mistral_ocr import MistralOcrClient, OcrPage, OcrResult
 from app.services.sie import is_sie_filename, parse_sie_bytes
+from app.services.xhtml_pdf import is_xhtml_filename, xhtml_to_pdf
 
 # OCR embeds figures as relative markdown images that are not MinIO objects.
 _IMAGE_PLACEHOLDER = re.compile(r"!\[[^\]]*\]\(img-\d+[^)]*\)", re.IGNORECASE)
@@ -32,6 +34,12 @@ class DocumentParser:
         mime = mime_type or "application/octet-stream"
         if is_sie_filename(filename):
             return parse_sie_bytes(file_bytes)
+        if is_xhtml_filename(filename):
+            # Bolagsverket XHTML → multi-page PDF → existing 30-page OCR slices.
+            pdf_bytes = xhtml_to_pdf(file_bytes, filename)
+            pdf_name = Path(filename).with_suffix(".pdf").name
+            result = self._ocr.process(pdf_bytes, pdf_name)
+            return self._from_ocr_result(result)
         if mime in _PLAIN_TEXT_MIMES or filename.lower().endswith(tuple(_PLAIN_TEXT_EXTENSIONS)):
             decoded = file_bytes.decode("utf-8", errors="replace")
             return ParsedContent(
