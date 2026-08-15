@@ -163,7 +163,7 @@ def merge_ingest_metadata(
         raise IngestMetadataError(
             "Could not determine "
             + ", ".join(missing)
-            + ". Fill them on upload, or use a document OCR can read."
+            + ". Fill them on upload, or use a document OCR can read (SIE fills company/year)."
         )
 
     assert company_name is not None

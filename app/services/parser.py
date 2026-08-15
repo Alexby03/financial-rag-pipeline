@@ -1,4 +1,7 @@
-"""Document parsing via Mistral OCR 4 → Markdown pages + figures."""
+"""Document parsing via Mistral OCR 4 → Markdown pages + figures.
+
+SIE / SI / SE accounting files bypass OCR and produce Markdown summaries.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ from app.models.ocr import FigureBBoxAnnotation
 from app.models.parsed import ParsedContent, ParsedFigure, ParsedPage
 from app.services.heading_normalizer import normalize_page_markdown
 from app.services.mistral_ocr import MistralOcrClient, OcrPage, OcrResult
+from app.services.sie import is_sie_filename, parse_sie_bytes
 
 # OCR embeds figures as relative markdown images that are not MinIO objects.
 _IMAGE_PLACEHOLDER = re.compile(r"!\[[^\]]*\]\(img-\d+[^)]*\)", re.IGNORECASE)
@@ -26,6 +30,8 @@ class DocumentParser:
     def parse(self, file_bytes: bytes, filename: str) -> ParsedContent:
         mime_type, _ = mimetypes.guess_type(filename)
         mime = mime_type or "application/octet-stream"
+        if is_sie_filename(filename):
+            return parse_sie_bytes(file_bytes)
         if mime in _PLAIN_TEXT_MIMES or filename.lower().endswith(tuple(_PLAIN_TEXT_EXTENSIONS)):
             decoded = file_bytes.decode("utf-8", errors="replace")
             return ParsedContent(

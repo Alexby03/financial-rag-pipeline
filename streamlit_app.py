@@ -380,7 +380,22 @@ with upload_tab:
     st.subheader("Upload document")
     with st.form("ingest"):
         uploaded = st.file_uploader(
-            "File", type=["pdf", "png", "jpg", "jpeg", "docx", "pptx", "xlsx", "txt", "md"]
+            "File",
+            type=[
+                "pdf",
+                "png",
+                "jpg",
+                "jpeg",
+                "docx",
+                "pptx",
+                "xlsx",
+                "txt",
+                "md",
+                "sie",
+                "si",
+                "se",
+            ],
+        )
         )
         company_name = st.text_input("Company name", value="", placeholder="Auto from document")
         upload_doc_type = st.selectbox(

@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import codecs
 import re
 from typing import Any
 
@@ -107,7 +106,7 @@ class SIEParser:
         """Read file lines, preferring CP437 with encoding fallbacks."""
         for encoding in ("cp437", "latin-1", "utf-8"):
             try:
-                with codecs.open(self.file_path, "r", encoding=encoding) as file:
+                with open(self.file_path, "r", encoding=encoding) as file:
                     return file.readlines()
             except UnicodeDecodeError:
                 continue
