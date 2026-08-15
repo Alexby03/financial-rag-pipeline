@@ -118,6 +118,12 @@ retrieve.
   them. This is what makes an otherwise context-free table of numbers findable.
 - **Markdown tables are never split.** A table block becomes exactly one chunk, with its
   breadcrumb prefix.
+- **Tab-separated financial rows are treated like tables.** OCR often emits
+  `Aktiekapital\t100 000\t100 000` instead of pipe tables; those rows stay together.
+- **Period column headers stick to later rows.** When a page (or an earlier page) shows
+  `2025-06-30` and `2024-06-30` as balance-sheet columns, later equity/liability chunks on
+  that statement get `Kolumner: 2025-06-30 | 2024-06-30` in the prefix so retrieval does not
+  lose which year an amount belongs to.
 - **Paragraphs under the same heading are merged** until `chunk_size` is reached, so chunks are
   meaningful units instead of single sentences. Oversized blocks fall back to character
   splitting that prefers a paragraph break past the halfway point, with `chunk_overlap`
