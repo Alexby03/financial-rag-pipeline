@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.models.enums import DocType
+from app.models.enums import Category, DocType
 from app.services.mistral_ocr import OcrResult
 from app.services.parser import DocumentParser
 from app.services.sie import is_sie_filename, parse_sie_bytes
@@ -38,12 +38,28 @@ def test_parse_sie_bytes_builds_markdown_summaries() -> None:
     assert parsed.annotation is not None
     assert parsed.annotation.company_name == "SME Corp AB"
     assert parsed.annotation.doc_type == DocType.ACCOUNTING_DATA
+    assert parsed.annotation.category == Category.FINANCING
     assert parsed.annotation.year == 2024
 
 
 def test_parse_sie_bytes_rejects_empty() -> None:
     with pytest.raises(ValueError, match="empty"):
         parse_sie_bytes(b"")
+
+
+def test_sie_annotation_defaults_category_and_finds_year_in_period() -> None:
+    from app.services.sie import _annotation_from_sie
+
+    annotation = _annotation_from_sie(
+        {
+            "metadata": {"company_name": "Sparse AB"},
+            "summary": {"company_name": "Sparse AB", "period": "20230101 to 20231231"},
+        }
+    )
+    assert annotation.doc_type == DocType.ACCOUNTING_DATA
+    assert annotation.category == Category.FINANCING
+    assert annotation.year == 2023
+    assert annotation.company_name == "Sparse AB"
 
 
 def test_document_parser_routes_sie_without_ocr() -> None:

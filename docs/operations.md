@@ -33,9 +33,9 @@ object it uploaded; leftovers from before that rollback have to be removed in th
 **Ingest job fails with `Could not determine company_name, ...`.**
 OCR `document_annotation` did not fill the blanks and the upload form left them empty. Fill
 them on upload, or re-try with a document that has a readable title page. Do not expect `.txt`
-passthrough to infer metadata. SIE files can fill `company_name` and `year` from `#FNAMN` /
-`#RAR`, but `category` (and often `doc_type` if you override it) still need the form —
-`accounting_data` is set automatically from the SIE path.
+passthrough to infer metadata. SIE files auto-fill `doc_type=accounting_data`,
+`category=financing`, plus `company_name` / `year` from `#FNAMN` / `#RAR` when present.
+`accounting_data` is a document type, not a category — leave category on Auto for SIE.
 
 **SIE ingest fails with `Failed to parse SIE file`.**
 The bytes are not valid SIE 4, the encoding is unreadable, or the file is empty. Open the

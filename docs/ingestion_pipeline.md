@@ -63,8 +63,10 @@ raw bytes are stored in MinIO like any other upload. Parsing never calls OCR: a 
 adaptation of [magnusfroste/sie-parser](https://github.com/magnusfroste/sie-parser)
 (see [NOTICE.md](../NOTICE.md)) builds balance-sheet / income-statement / transaction
 summaries, rendered as Markdown tables. Those summaries are what the chunker embeds into
-Qdrant — not every voucher line. Prefer `doc_type=accounting_data`. Company name and year
-are filled from `#FNAMN` / `#RAR` when the upload form leaves them blank.
+Qdrant — not every voucher line. `doc_type` is set to `accounting_data` and `category`
+defaults to `financing` (they are separate filters — accounting_data is not a category).
+Company name and year are filled from `#FNAMN` / `#RAR` when the upload form leaves them
+blank.
 
 **OCR → Markdown.** Each `pages[].markdown` becomes a `ParsedPage`. Page identity comes from
 `pages[].index`, normalized to 1-based `page_number`. Empty pages are dropped and **not**

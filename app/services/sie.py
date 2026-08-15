@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from app.models.enums import DocType
+from app.models.enums import Category, DocType
 from app.models.ocr import OcrDocumentAnnotation
 from app.models.parsed import ParsedContent, ParsedPage
 from third_party.magnusfroste_sie_parser import SIEParser, process_for_llm
@@ -60,34 +60,72 @@ def parse_sie_bytes(file_bytes: bytes) -> ParsedContent:
 
 
 def _annotation_from_sie(llm_data: dict[str, Any]) -> OcrDocumentAnnotation:
+    """Fill ingest blanks from SIE tags.
+
+    `accounting_data` is a doc_type, not a category. SIE defaults category to
+    financing so uploads do not require the form when the ledger parses cleanly.
+    """
     metadata = llm_data.get("metadata") or {}
     summary = llm_data.get("summary") or {}
     company = _filled(metadata.get("company_name")) or _filled(summary.get("company_name"))
-    year = _year_from_metadata(metadata)
+    year = _year_from_metadata(metadata) or _year_from_summary(summary)
     return OcrDocumentAnnotation(
         company_name=company,
         doc_type=DocType.ACCOUNTING_DATA,
+        category=Category.FINANCING,
         year=year,
     )
 
 
 def _year_from_metadata(metadata: dict[str, Any]) -> int | None:
     for key in ("rar", "current_fiscal_year_start_year", "current_fiscal_year_end_year"):
-        value = metadata.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if len(text) >= 4 and text[:4].isdigit():
-            return int(text[:4])
+        parsed = _year_from_value(metadata.get(key))
+        if parsed is not None:
+            return parsed
 
-    start = metadata.get("financial_year_start")
-    if isinstance(start, str) and len(start) >= 4 and start[:4].isdigit():
-        return int(start[:4])
+    for key in ("financial_year_start", "financial_year_end", "generation_date", "gen_date"):
+        parsed = _year_from_value(metadata.get(key))
+        if parsed is not None:
+            return parsed
 
     fiscal = metadata.get("current_fiscal_year") or {}
-    start_date = fiscal.get("start_date") if isinstance(fiscal, dict) else None
-    if isinstance(start_date, str) and len(start_date) >= 4 and start_date[:4].isdigit():
-        return int(start_date[:4])
+    if isinstance(fiscal, dict):
+        for key in ("start_date", "end_date"):
+            parsed = _year_from_value(fiscal.get(key))
+            if parsed is not None:
+                return parsed
+
+    years = metadata.get("fiscal_years") or {}
+    if isinstance(years, dict):
+        # Prefer current year id "0", then any other #RAR block.
+        ordered = []
+        if "0" in years:
+            ordered.append(years["0"])
+        ordered.extend(value for key, value in years.items() if key != "0")
+        for year_data in ordered:
+            if not isinstance(year_data, dict):
+                continue
+            for key in ("start_date", "end_date"):
+                parsed = _year_from_value(year_data.get(key))
+                if parsed is not None:
+                    return parsed
+    return None
+
+
+def _year_from_summary(summary: dict[str, Any]) -> int | None:
+    return _year_from_value(summary.get("period"))
+
+
+def _year_from_value(value: Any) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    for index in range(len(text) - 3):
+        chunk = text[index : index + 4]
+        if chunk.isdigit():
+            year = int(chunk)
+            if 1900 <= year <= 2100:
+                return year
     return None
 
 
