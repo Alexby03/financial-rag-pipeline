@@ -8,6 +8,7 @@ from app.config import Settings
 from app.models.api import (
     ChatTurn,
     FigureReadingTrace,
+    FusionTrace,
     QueryRequest,
     QueryResponse,
     RerankTrace,
@@ -18,10 +19,12 @@ from app.models.api import (
 from app.models.llm import FigureReading
 from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
+from app.services.lexical import bm25_rank_indices, content_phrases, tokenize
 from app.services.minio_client import MinioStorage
 from app.services.openai_client import OpenAIService
 from app.services.qdrant_service import QdrantService
 from app.services.reranker import CohereReranker
+from app.services.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
 
@@ -36,22 +39,29 @@ class Candidate:
     vector_score: float
     vector_rank: int
     rerank_score: float | None = None
+    lexical_rank: int | None = None
+    rrf_score: float | None = None
 
 RAG_SYSTEM_PROMPT = """You are an Financial analyst assistant.
-Answer using only the provided context.
-Each chunk includes metadata with chunk_id, previous_chunk_id, and next_chunk_id.
-These form a double-linked list within each document — adjacent chunks may continue
-tables, clauses, or org-chart details. Use neighboring context only when the retrieved
-chunk appears incomplete or the question spans multiple sections.
-OCR captions on figure chunks are retrieval hints and are often incomplete.
-When the prompt includes "Authoritative figure readings", a vision model has already
-looked at the stored figure crops. Those readings are primary evidence for plotted
-values (years, totals, series). Prefer them over captions and over prose that does not
-state the same number. Never claim that a year or value is missing if an authoritative
-figure reading reports it. If a reading is approximate, keep that caveat in the answer.
-If the context is still insufficient after those readings, say so.
-Prior conversation turns may be included — resolve follow-ups against that dialogue and
-the current retrieval context together.
+Answer using only the provided context chunks in this turn.
+Each chunk header includes source filename and page number — treat those as ground truth
+for what you have. Never claim a page, table, or line item is missing if it appears
+anywhere in Context chunks. Never ask the user to resend pages that are already in context.
+Prior conversation turns may be wrong about missing data; prefer the current Context chunks
+over earlier assistant denials.
+
+Financial tables often carry period labels as
+"Kolumner (vänster→höger efter radetikett): YYYY-MM-DD | YYYY-MM-DD" and/or as markdown
+table header cells (Post | date1 | date2). Those dates are column headers left→right after
+the row label (first amount column = first date, second = second date). When the user asks
+for calendar year YYYY, use the column whose period ends in YYYY (e.g. 2024-06-30 for
+"2024") unless they specify a different basis. Quote the amount with its period date.
+
+Each chunk includes chunk_id, previous_chunk_id, and next_chunk_id (a double-linked list).
+Use neighbors when a table or clause continues across chunks.
+OCR figure captions are retrieval hints. When "Authoritative figure readings" are present,
+prefer them for plotted numbers. If a reading is approximate, keep that caveat.
+If — after reading every context chunk carefully — the answer is still not present, say so.
 Cite source filenames and page numbers when relevant."""
 
 
@@ -76,12 +86,13 @@ class RagService:
     def query(self, request: QueryRequest) -> QueryResponse:
         retrieval_started = perf_counter()
         reranker = self._reranker if request.rerank else None
+        hybrid = self._settings.hybrid_lexical
 
         query_vector = self._embedder.embed_query(request.question)
         hits = self._qdrant.search(
             query_vector=query_vector,
             tenant_id=request.tenant_id,
-            limit=self._candidate_limit(request.top_k, reranker),
+            limit=self._candidate_limit(request.top_k, reranker, hybrid),
             doc_type=request.doc_type.value if request.doc_type else None,
             category=request.category.value if request.category else None,
             year=request.year,
@@ -92,7 +103,9 @@ class RagService:
             for rank, (payload, score) in enumerate(hits, start=1)
         ]
 
-        selected, rerank_trace = self._apply_rerank(request, candidates, reranker)
+        selected, rerank_trace, fusion_trace = self._select_candidates(
+            request, candidates, reranker, hybrid
+        )
         context_payloads = self._resolve_context(
             [candidate.payload for candidate in selected], request.expand_neighbors
         )
@@ -136,48 +149,106 @@ class RagService:
             generation_ms=generation_ms,
             reasoning_summary=reasoned.reasoning_summary,
             rerank_trace=rerank_trace,
+            fusion_trace=fusion_trace,
             figure_readings=figure_readings,
             vision_ms=vision_ms,
         )
         return QueryResponse(answer=reasoned.answer, sources=sources, trace=trace)
 
-    def _candidate_limit(self, top_k: int, reranker: CohereReranker | None) -> int:
-        if reranker is None:
+    def _candidate_limit(
+        self,
+        top_k: int,
+        reranker: CohereReranker | None,
+        hybrid: bool,
+    ) -> int:
+        if reranker is None and not hybrid:
             return top_k
         return top_k * self._settings.rerank_candidate_multiplier
 
-    def _apply_rerank(
+    def _select_candidates(
         self,
         request: QueryRequest,
         candidates: list[Candidate],
         reranker: CohereReranker | None,
-    ) -> tuple[list[Candidate], RerankTrace | None]:
-        if reranker is None:
-            return candidates[: request.top_k], None
+        hybrid: bool,
+    ) -> tuple[list[Candidate], RerankTrace | None, FusionTrace | None]:
+        if not candidates:
+            return [], None, None
 
-        rerank_started = perf_counter()
-        outcome = reranker.rerank(
-            query=request.question,
-            documents=[candidate.payload.raw_text for candidate in candidates],
-            top_n=request.top_k,
+        rerank_trace: RerankTrace | None = None
+        cohere_order: list[int] | None = None
+
+        if reranker is not None:
+            rerank_started = perf_counter()
+            # Ask Cohere for the full candidate pool so RRF can use its full ranking.
+            outcome = reranker.rerank(
+                query=request.question,
+                documents=[candidate.payload.raw_text for candidate in candidates],
+                top_n=len(candidates),
+            )
+            rerank_trace = RerankTrace(
+                model=reranker.model,
+                candidates=len(candidates),
+                applied=outcome.applied,
+                fallback_reason=outcome.fallback_reason,
+                rerank_ms=self._elapsed_ms(rerank_started),
+            )
+            if outcome.applied:
+                cohere_order = []
+                for document in outcome.documents:
+                    candidates[document.index].rerank_score = document.relevance_score
+                    cohere_order.append(document.index)
+
+        if not hybrid and cohere_order is not None:
+            selected = [candidates[index] for index in cohere_order[: request.top_k]]
+            return selected, rerank_trace, None
+
+        if not hybrid:
+            return candidates[: request.top_k], rerank_trace, None
+
+        vector_order = list(range(len(candidates)))
+        documents = [candidate.payload.raw_text for candidate in candidates]
+        lexical_order = bm25_rank_indices(request.question, documents)
+        for lexical_rank, index in enumerate(lexical_order, start=1):
+            candidates[index].lexical_rank = lexical_rank
+
+        # Dense+sparse RRF is the industry default. When Cohere ran, use its order
+        # instead of raw vector order (cross-encoder already judged semantics).
+        if cohere_order is not None:
+            rankings = [cohere_order, lexical_order]
+            tie_break = {index: rank for rank, index in enumerate(cohere_order, start=1)}
+        else:
+            rankings = [vector_order, lexical_order]
+            tie_break = {index: rank for rank, index in enumerate(vector_order, start=1)}
+
+        phrase_order = _exact_phrase_ranking(request.question, documents, lexical_order)
+        weights = [1.0, 1.0]
+        if phrase_order is not None:
+            rankings.append(phrase_order)
+            # Exact rare phrases must outweigh dense+BM25 agreement on cover pages.
+            weights.append(2.0)
+            tie_break = {index: rank for rank, index in enumerate(lexical_order, start=1)}
+
+        fused = reciprocal_rank_fusion(
+            rankings,
+            k=self._settings.rrf_k,
+            weights=weights,
+            tie_break_ranks=tie_break,
         )
-        trace = RerankTrace(
-            model=reranker.model,
+        selected: list[Candidate] = []
+        for index, rrf_score in fused[: request.top_k]:
+            candidate = candidates[index]
+            candidate.rrf_score = rrf_score
+            selected.append(candidate)
+
+        fusion_trace = FusionTrace(
+            method="rrf",
+            lexical_applied=True,
+            cohere_applied=cohere_order is not None,
             candidates=len(candidates),
-            applied=outcome.applied,
-            fallback_reason=outcome.fallback_reason,
-            rerank_ms=self._elapsed_ms(rerank_started),
+            rrf_k=self._settings.rrf_k,
         )
-
-        if not outcome.applied:
-            return candidates[: request.top_k], trace
-
-        reordered: list[Candidate] = []
-        for document in outcome.documents:
-            candidate = candidates[document.index]
-            candidate.rerank_score = document.relevance_score
-            reordered.append(candidate)
-        return reordered[: request.top_k], trace
+        return selected, rerank_trace, fusion_trace
 
     def _build_trace(
         self,
@@ -188,6 +259,7 @@ class RagService:
         generation_ms: int,
         reasoning_summary: str,
         rerank_trace: RerankTrace | None,
+        fusion_trace: FusionTrace | None,
         figure_readings: list[FigureReading],
         vision_ms: int,
     ) -> RetrievalTrace:
@@ -216,6 +288,8 @@ class RagService:
                     preview=self._preview(candidate.payload.raw_text),
                     vector_rank=candidate.vector_rank,
                     rerank_score=candidate.rerank_score,
+                    lexical_rank=candidate.lexical_rank,
+                    rrf_score=candidate.rrf_score,
                 )
                 for candidate in selected
             ],
@@ -231,6 +305,7 @@ class RagService:
             vision_model=self._settings.openai_vision_model if figure_readings else "",
             reasoning_summary=reasoning_summary,
             rerank=rerank_trace,
+            fusion=fusion_trace,
             figure_readings=[
                 FigureReadingTrace(
                     chunk_id=reading.chunk_id,
@@ -440,3 +515,55 @@ class RagService:
                 lines.extend(["", "Vision reading:", reading.reading])
             sections.append("\n".join(lines))
         return "\n\n---\n\n".join(sections)
+
+
+def _exact_phrase_ranking(
+    query: str,
+    documents: list[str],
+    lexical_order: list[int],
+) -> list[int] | None:
+    """Third RRF list: docs matching contiguous query phrases, then lexical order.
+
+    Uses short content phrases (e.g. ``balanserat resultat``), not a join of every
+    content word. Matches are weighted by rarity in the candidate pool so cover-page
+    company-name n-grams do not outrank a unique account line.
+    """
+    phrases = content_phrases(query)
+    if not phrases:
+        return None
+
+    joined_docs = [" ".join(tokenize(document)) for document in documents]
+    phrase_df = {
+        phrase: sum(1 for text in joined_docs if phrase in text) for phrase in phrases
+    }
+    # Discriminative phrases only: unique-in-pool first, else the rarest tier.
+    # Cover pages share company-name n-grams; account lines usually appear once.
+    positive_df = [n for n in phrase_df.values() if n > 0]
+    if not positive_df:
+        return None
+    unique = [phrase for phrase, n_docs in phrase_df.items() if n_docs == 1]
+    target = set(unique) if unique else {
+        phrase for phrase, n_docs in phrase_df.items() if n_docs == min(positive_df)
+    }
+
+    scored: list[tuple[int, float]] = []
+    for index, text in enumerate(joined_docs):
+        score = 0.0
+        for phrase in target:
+            if phrase not in text:
+                continue
+            n_docs = phrase_df[phrase]
+            score += len(phrase.split()) / n_docs
+            if n_docs == 1:
+                score += 3.0
+        if score > 0:
+            scored.append((index, score))
+    if not scored:
+        return None
+
+    lexical_rank = {index: rank for rank, index in enumerate(lexical_order)}
+    scored.sort(key=lambda item: (-item[1], lexical_rank.get(item[0], 10**9), item[0]))
+    hits = [index for index, _ in scored]
+    hit_set = set(hits)
+    rest = [index for index in lexical_order if index not in hit_set]
+    return hits + rest

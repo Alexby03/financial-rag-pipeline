@@ -116,6 +116,54 @@ def test_section_three_does_not_nest_under_subsection_on_the_next_page() -> None
     assert "2.3" not in chunks[0].text.split("\n\n", 1)[0]
 
 
+def test_balance_sheet_column_years_stick_to_tsv_rows() -> None:
+    """OCR often emits tab rows; period headers must ride along like breadcrumbs."""
+    settings = Settings(openai_api_key="test-key", chunk_size=80, chunk_overlap=0)
+    chunker = Chunker(settings=settings)
+    markdown = (
+        "# Balansräkning\n\n"
+        "Not\t2025-06-30\t2024-06-30\n\n"
+        "## EGET KAPITAL OCH SKULDER\n\n"
+        "Fritt eget kapital\n\n"
+        "Balanserat resultat\t67 646\t40 803\n"
+        "Årets resultat\t52 601\t26 843\n"
+        "Summa fritt eget kapital\t120 247\t67 646\n"
+    )
+    chunks = chunker.split_markdown(markdown)
+    money_chunks = [chunk for chunk in chunks if "67 646" in chunk.text]
+
+    assert money_chunks
+    assert "Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30" in money_chunks[0].text
+    assert "| Post | 2025-06-30 | 2024-06-30 |" in money_chunks[0].text
+    assert "EGET KAPITAL OCH SKULDER" in money_chunks[0].text
+    assert "Årets resultat" in money_chunks[0].text
+
+
+def test_column_periods_carry_across_page_break() -> None:
+    settings = Settings(openai_api_key="test-key")
+    chunker = Chunker(settings=settings)
+    pages = [
+        ParsedPage(
+            text="# Balansräkning\n\n| Not | 2025-06-30 | 2024-06-30 |\n| --- | ---: | ---: |",
+            page_number=3,
+        ),
+        ParsedPage(
+            text=(
+                "## EGET KAPITAL OCH SKULDER\n\n"
+                "Aktiekapital\t100 000\t100 000\n"
+                "Summa bundet eget kapital\t100 000\t100 000\n"
+            ),
+            page_number=4,
+        ),
+    ]
+    chunks = chunker.split_pages(pages)
+    equity = [chunk for chunk in chunks if "Aktiekapital" in chunk.text]
+
+    assert len(equity) == 1
+    assert equity[0].page_number == 4
+    assert "Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30" in equity[0].text
+
+
 def test_qdrant_payload_roundtrip() -> None:
     metadata = ChunkMetadata(
         tenant_id="tenant_1",

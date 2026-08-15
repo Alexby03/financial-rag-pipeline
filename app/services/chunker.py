@@ -10,6 +10,11 @@ from app.models.metadata import ChunkMetadata, QdrantPayload
 from app.models.parsed import ParsedPage
 
 _FENCE_PATTERN = re.compile(r"^```[a-zA-Z0-9_-]*\s*(.*?)\s*```$", re.DOTALL)
+# Balance-sheet / income-statement column dates from Bolagsverket-style reports.
+_ISO_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+_AMOUNT_TOKEN = re.compile(
+    r"^-?\d{1,3}(?:[ \u00a0]\d{3})*(?:[.,]\d+)?$|^-?\d+(?:[.,]\d+)?$"
+)
 
 
 def strip_code_fence(text: str) -> str:
@@ -35,13 +40,19 @@ class Chunker:
         """Chunk a document page by page, carrying headings across page breaks."""
         chunks: list[TextChunk] = []
         headings: dict[int, str] = {}
+        column_periods: str | None = None
         for page in pages:
-            page_chunks, headings = self._split_page(page.text, page.page_number, headings)
+            page_chunks, headings, column_periods = self._split_page(
+                page.text,
+                page.page_number,
+                headings,
+                column_periods,
+            )
             chunks.extend(page_chunks)
         return chunks
 
     def split_markdown(self, markdown: str, page_number: int = 1) -> list[TextChunk]:
-        chunks, _ = self._split_page(markdown, page_number, {})
+        chunks, _, _ = self._split_page(markdown, page_number, {}, None)
         return chunks
 
     def _split_page(
@@ -49,30 +60,40 @@ class Chunker:
         markdown: str,
         page_number: int,
         inherited_headings: dict[int, str],
-    ) -> tuple[list[TextChunk], dict[int, str]]:
+        inherited_column_periods: str | None,
+    ) -> tuple[list[TextChunk], dict[int, str], str | None]:
         normalized = strip_code_fence(markdown)
         if not normalized:
-            return [], inherited_headings
+            return [], inherited_headings, inherited_column_periods
 
         chunks: list[TextChunk] = []
         headings = dict(inherited_headings)
+        column_periods = inherited_column_periods
         pending: list[str] = []
 
         for block in self._split_markdown_blocks(normalized):
+            periods = self._column_periods_from_block(block)
+            if periods:
+                column_periods = periods
+
             level = self._heading_level(block)
             if level is not None:
-                chunks.extend(self._flush(pending, headings, page_number))
+                chunks.extend(
+                    self._flush(pending, headings, page_number, column_periods)
+                )
                 pending = []
                 headings = {lvl: text for lvl, text in headings.items() if lvl < level}
                 headings[level] = block.lstrip("#").strip()
                 continue
 
-            if self._is_markdown_table(block):
-                chunks.extend(self._flush(pending, headings, page_number))
+            if self._is_markdown_table(block) or self._is_tsv_financial_table(block):
+                chunks.extend(
+                    self._flush(pending, headings, page_number, column_periods)
+                )
                 pending = []
                 chunks.append(
                     TextChunk(
-                        text=self._with_context(block, headings),
+                        text=self._with_context(block, headings, column_periods),
                         page_number=page_number,
                     )
                 )
@@ -80,8 +101,8 @@ class Chunker:
 
             pending.append(block)
 
-        chunks.extend(self._flush(pending, headings, page_number))
-        return chunks, headings
+        chunks.extend(self._flush(pending, headings, page_number, column_periods))
+        return chunks, headings, column_periods
 
     def split_json(self, json_text: str, page_number: int = 1) -> list[TextChunk]:
         normalized = json_text.strip()
@@ -136,20 +157,117 @@ class Chunker:
         pending: list[str],
         headings: dict[int, str],
         page_number: int,
+        column_periods: str | None,
     ) -> list[TextChunk]:
         if not pending:
             return []
         return [
-            TextChunk(text=self._with_context(chunk.text, headings), page_number=page_number)
+            TextChunk(
+                text=self._with_context(chunk.text, headings, column_periods),
+                page_number=page_number,
+            )
             for chunk in self._split_plain_text("\n\n".join(pending), page_number)
         ]
 
     @staticmethod
-    def _with_context(text: str, headings: dict[int, str]) -> str:
-        if not headings:
+    def _with_context(
+        text: str,
+        headings: dict[int, str],
+        column_periods: str | None = None,
+    ) -> str:
+        body = text
+        if column_periods:
+            body = Chunker._ensure_table_period_headers(text, column_periods)
+        parts: list[str] = []
+        if headings:
+            parts.append(" > ".join(headings[level] for level in sorted(headings)))
+        if column_periods:
+            # Explicit left→right map; also mirrored in markdown table headers when possible.
+            parts.append(f"Kolumner (vänster→höger efter radetikett): {column_periods}")
+        if not parts:
+            return body
+        return "\n".join(parts) + "\n\n" + body
+
+    @staticmethod
+    def _ensure_table_period_headers(text: str, column_periods: str) -> str:
+        """Put period dates into table headers so models bind amount columns to years."""
+        dates = [part.strip() for part in column_periods.split("|") if part.strip()]
+        if len(dates) < 2:
             return text
-        breadcrumb = " > ".join(headings[level] for level in sorted(headings))
-        return f"{breadcrumb}\n\n{text}"
+        with_pipe = Chunker._inject_markdown_table_headers(text, dates)
+        return Chunker._tsv_amount_rows_to_markdown_table(with_pipe, dates)
+
+    @staticmethod
+    def _period_table_header(dates: list[str], value_column_count: int) -> tuple[str, str]:
+        value_headers = dates[:value_column_count]
+        while len(value_headers) < value_column_count:
+            value_headers.append("")
+        header = "| Post | " + " | ".join(value_headers) + " |"
+        separator = "| --- | " + " | ".join([":---:"] * value_column_count) + " |"
+        return header, separator
+
+    @staticmethod
+    def _inject_markdown_table_headers(text: str, dates: list[str]) -> str:
+        lines = text.splitlines()
+        table_indexes = [index for index, line in enumerate(lines) if "|" in line]
+        if not table_indexes:
+            return text
+
+        start = table_indexes[0]
+        end = start
+        while end + 1 < len(lines) and "|" in lines[end + 1]:
+            end += 1
+        table_lines = lines[start : end + 1]
+        if any(len(_ISO_DATE.findall(line)) >= 2 for line in table_lines[:2]):
+            return text
+
+        data_rows = [
+            line
+            for line in table_lines
+            if not re.match(r"^\s*\|?[\s:-]+\|[\s|:-]*$", line)
+        ]
+        if not data_rows:
+            return text
+
+        sample_cells = [cell.strip() for cell in data_rows[0].strip().strip("|").split("|")]
+        column_count = len(sample_cells)
+        if column_count < 3:
+            return text
+
+        header, separator = Chunker._period_table_header(dates, column_count - 1)
+        rebuilt = [header, separator, *data_rows]
+        return "\n".join([*lines[:start], *rebuilt, *lines[end + 1 :]])
+
+    @staticmethod
+    def _tsv_amount_rows_to_markdown_table(text: str, dates: list[str]) -> str:
+        """Rewrite sticky TSV amount blocks as markdown tables with period headers."""
+        lines = text.splitlines()
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            if not Chunker._is_tsv_amount_row(line):
+                output.append(line)
+                index += 1
+                continue
+
+            run: list[str] = []
+            while index < len(lines) and Chunker._is_tsv_amount_row(lines[index]):
+                run.append(lines[index])
+                index += 1
+
+            cells = [part.strip() for part in run[0].split("\t")]
+            if len(cells) < 3:
+                output.extend(run)
+                continue
+
+            header, separator = Chunker._period_table_header(dates, len(cells) - 1)
+            output.append(header)
+            output.append(separator)
+            for row in run:
+                parts = [part.strip() for part in row.split("\t")]
+                output.append("| " + " | ".join(parts) + " |")
+        return "\n".join(output)
 
     @staticmethod
     def _heading_level(block: str) -> int | None:
@@ -179,6 +297,19 @@ class Chunker:
         return chunks
 
     @staticmethod
+    def _column_periods_from_block(block: str) -> str | None:
+        """Return '2025-06-30 | 2024-06-30' when a block exposes period columns."""
+        for line in block.splitlines():
+            dates = _ISO_DATE.findall(line)
+            if len(dates) >= 2:
+                ordered: list[str] = []
+                for date in dates:
+                    if date not in ordered:
+                        ordered.append(date)
+                return " | ".join(ordered)
+        return None
+
+    @staticmethod
     def _split_markdown_blocks(markdown: str) -> list[str]:
         lines = markdown.splitlines()
         blocks: list[str] = []
@@ -186,7 +317,9 @@ class Chunker:
         in_table = False
 
         for line in lines:
-            is_table_line = "|" in line and line.strip()
+            is_pipe_table_line = "|" in line and bool(line.strip())
+            is_tsv_row = Chunker._is_tsv_amount_row(line)
+            is_table_line = is_pipe_table_line or is_tsv_row
             if is_table_line:
                 if not in_table and current:
                     blocks.append("\n".join(current).strip())
@@ -222,6 +355,32 @@ class Chunker:
         return pipe_lines >= 2 and pipe_lines / len(lines) >= 0.5
 
     @staticmethod
+    def _is_tsv_financial_table(block: str) -> bool:
+        lines = [line for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return False
+        amount_rows = sum(1 for line in lines if Chunker._is_tsv_amount_row(line))
+        return amount_rows >= 2 and amount_rows / len(lines) >= 0.5
+
+    @staticmethod
+    def _is_tsv_amount_row(line: str) -> bool:
+        """True for OCR rows like 'Aktiekapital\\t100 000\\t100 000'."""
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "|" in stripped:
+            return False
+        if "\t" in stripped:
+            parts = [part.strip() for part in stripped.split("\t") if part.strip()]
+        else:
+            parts = re.split(r"\s{2,}|\t+", stripped)
+            parts = [part.strip() for part in parts if part.strip()]
+        if len(parts) < 3:
+            return False
+        amount_like = sum(
+            1 for part in parts[1:] if _AMOUNT_TOKEN.match(part.replace("\u00a0", " "))
+        )
+        return amount_like >= 2
+
+    @staticmethod
     def new_document_id() -> str:
         return str(uuid.uuid4())
 
@@ -248,4 +407,3 @@ def _required_year(metadata: IngestMetadata) -> int:
     if metadata.year is None:
         raise ValueError("year is required before indexing")
     return metadata.year
-

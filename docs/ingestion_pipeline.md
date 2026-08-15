@@ -46,10 +46,12 @@ is not left behind.
 `DocumentParser` sends PDF, Office (DOCX/PPTX), and images to Mistral OCR 4 on Azure AI
 Foundry. The OCR response is mapped to Markdown pages plus optional figures. Plain `.txt` /
 `.md` stay local (verbatim UTF-8) because they are already text. Swedish SIE accounting
-files (`.sie` / `.si` / `.se`) are parsed locally into Markdown summaries without OCR. No
-OpenAI model reads a document. Foundry rejects PDFs over 30 pages
-(`document_parser_too_many_pages`), so a long PDF is sliced with pypdf and each slice is
-OCR'd separately; page numbers are mapped back onto the original document.
+files (`.sie` / `.si` / `.se`) are parsed locally into Markdown summaries without OCR.
+Bolagsverket-style XHTML is printed to a multi-page PDF (page containers / CSS breaks), then
+OCR'd in the same 30-page slices as a normal PDF. No OpenAI model reads a document. Foundry
+rejects PDFs over 30 pages (`document_parser_too_many_pages`), so a long PDF is sliced with
+pypdf and each slice is OCR'd separately; page numbers are mapped back onto the original
+document.
 
 | Input | Strategy | Output |
 |-------|----------|--------|
@@ -57,6 +59,14 @@ OCR'd separately; page numbers are mapped back onto the original document.
 | DOCX, PPTX, images | Mistral OCR 4 (`/ocr`, one call) | Markdown pages + figures |
 | Plain text / Markdown | Verbatim decode | Single Markdown page |
 | SIE (`.sie`, `.si`, `.se`) | Lean vendored SIE 4 parser → LLM summaries (no OCR) | Markdown summary pages |
+| XHTML / HTML | Headless Edge/Chrome print → PDF → OCR (30-page slices) | Markdown pages + figures |
+
+**XHTML annual reports.** Bolagsverket iXBRL files are one long scrollable document. Ingest
+detects print pages via containers such as `rb-page`, `ar-page`, and `pagebreak_before` (or
+falls back to the browser honouring CSS `@page` / `page-break-*`). Each page is printed to
+PDF with headless Edge or Chrome (`CHROME_PATH` / `EDGE_PATH` override), the pages are merged,
+and the result reuses the PDF OCR path — including 30-page Foundry batches. The original
+`.xhtml` bytes stay in MinIO; Open still points at that source file.
 
 **SIE accounting files.** Swedish SIE 4 exports are tagged plain text (usually CP437). The
 raw bytes are stored in MinIO like any other upload. Parsing never calls OCR: a lean
@@ -108,6 +118,13 @@ retrieve.
   them. This is what makes an otherwise context-free table of numbers findable.
 - **Markdown tables are never split.** A table block becomes exactly one chunk, with its
   breadcrumb prefix.
+- **Tab-separated financial rows are treated like tables.** OCR often emits
+  `Aktiekapital\t100 000\t100 000` instead of pipe tables; those rows stay together.
+- **Period column headers stick to later rows.** When a page (or an earlier page) shows
+  `2025-06-30` and `2024-06-30` as balance-sheet columns, later equity/liability chunks on
+  that statement get `Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30`
+  in the prefix (and the same dates injected into markdown table headers when possible) so retrieval does not
+  lose which year an amount belongs to.
 - **Paragraphs under the same heading are merged** until `chunk_size` is reached, so chunks are
   meaningful units instead of single sentences. Oversized blocks fall back to character
   splitting that prefers a paragraph break past the halfway point, with `chunk_overlap`
@@ -175,6 +192,27 @@ Before upserting, the previous version of the document is deleted. The delete ma
 keeps its name and replaces itself, and a document that was renamed is still recognized by its
 content. Ingest is therefore idempotent per `(tenant_id, source_filename)` and per
 `(tenant_id, content_hash)` rather than appending duplicates.
+
+## 7. Why chunk text matters for BM25 (query time)
+
+Ingest itself only embeds and stores `raw_text`. At query time the same strings are also
+scored with **BM25** (Best Match 25), a classical lexical ranker used across search engines
+and hybrid RAG stacks. BM25 does not run during ingest; it ranks the dense candidate pool
+when answering. See [rag_strategy.md](rag_strategy.md) for fusion with Cohere and RRF.
+
+In short, BM25 treats the question and each chunk as bags of tokens and scores a chunk
+higher when:
+
+- query terms appear often in that chunk (term frequency, with saturation so repetition
+  does not dominate),
+- those terms are rare across the candidate set (inverse document frequency),
+- and the chunk is not excessively long (length normalization).
+
+That is why account labels and table headers must survive chunking intact: embeddings may
+prefer nearby prose, but BM25 promotes the chunk that literally contains
+`Balanserat resultat`. Period prefixes such as
+`Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30` also
+become searchable tokens for the same reason.
 
 ## Schema changes require re-ingestion
 

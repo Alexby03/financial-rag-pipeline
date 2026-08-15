@@ -79,6 +79,8 @@ class RetrievedChunkTrace(BaseModel):
     preview: str
     vector_rank: int
     rerank_score: float | None = None
+    lexical_rank: int | None = None
+    rrf_score: float | None = None
 
 
 class RerankTrace(BaseModel):
@@ -87,6 +89,16 @@ class RerankTrace(BaseModel):
     applied: bool
     fallback_reason: str = ""
     rerank_ms: int = 0
+
+
+class FusionTrace(BaseModel):
+    """How dense / lexical / Cohere rankings were combined."""
+
+    method: str = "rrf"
+    lexical_applied: bool = False
+    cohere_applied: bool = False
+    candidates: int = 0
+    rrf_k: int = 60
 
 
 class FigureReadingTrace(BaseModel):
@@ -115,6 +127,7 @@ class RetrievalTrace(BaseModel):
     vision_model: str = ""
     reasoning_summary: str = ""
     rerank: RerankTrace | None = None
+    fusion: FusionTrace | None = None
     figure_readings: list[FigureReadingTrace] = Field(default_factory=list)
 
 

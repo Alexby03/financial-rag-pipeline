@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     cohere_rerank_model: str = "rerank-multilingual-v3.0"
     rerank_candidate_multiplier: int = Field(default=4, ge=1, le=10)
     rerank_timeout_seconds: float = 10.0
+    # Late lexical BM25 over the dense candidate pool, fused with RRF (and Cohere when on).
+    hybrid_lexical: bool = True
+    rrf_k: int = Field(default=60, ge=1, le=200)
 
     # Mistral OCR 4 on Azure AI Foundry. Required for PDF/Office/image ingest.
     mistral_ocr_endpoint: str = ""

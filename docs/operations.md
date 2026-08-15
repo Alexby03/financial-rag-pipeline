@@ -44,6 +44,17 @@ version). Tab-separated Norstedts exports are supported. SIE 5 XML is not. After
 the SIE parser, delete existing chunks for that document before re-uploading or the
 duplicate hash check will skip the re-parse.
 
+**XHTML ingest fails with `No Chrome/Edge browser found`.**
+Bolagsverket `.xhtml` is printed to PDF before OCR. Install Microsoft Edge or Google Chrome
+on the API host, or set `CHROME_PATH` / `EDGE_PATH` to the browser binary. Without a
+browser the job cannot create page images for Mistral.
+
+**XHTML ingest is slow or times out.**
+Each detected page is printed headlessly, then the merged PDF is OCR'd in 30-page slices.
+Large iXBRL files embed fonts as base64 and take longer to print — raise
+`MISTRAL_OCR_TIMEOUT_SECONDS` if the OCR step is what fails; a print timeout is fixed at
+120s per page in `xhtml_pdf`.
+
 **Ingest job returns `status="duplicate"` and indexes nothing.**
 Expected. The same tenant already has chunks with that content hash, so the worker skipped
 parsing. To force a re-parse — after changing the parser, say — delete the document's chunks
