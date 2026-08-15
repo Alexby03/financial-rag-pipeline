@@ -44,8 +44,10 @@ score(d) = Σ 1 / (k + rank_i(d))   with k = 60 by default
 ```
 
 Here lexical rank is **local BM25 over the dense candidate pool** (no extra Qdrant index),
-plus a phrase bonus when the full query appears in the chunk. That is enough to lift exact
-terms without re-embedding the collection.
+plus a bonus for **contiguous content phrases** extracted from the question (e.g.
+`balanserat resultat`), using only phrases that are rare in that pool so cover-page
+company names do not drown out a unique account line. A third RRF list (weight 2) ranks
+the same rare phrase hits. That lifts exact terms without re-embedding or retuning Cohere.
 
 When Cohere Rerank is on, RRF fuses **Cohere order + BM25** (the cross-encoder already
 replaced raw vector order). When Cohere is off or fails open, RRF fuses **vector + BM25**.

@@ -122,7 +122,8 @@ retrieve.
   `Aktiekapital\t100 000\t100 000` instead of pipe tables; those rows stay together.
 - **Period column headers stick to later rows.** When a page (or an earlier page) shows
   `2025-06-30` and `2024-06-30` as balance-sheet columns, later equity/liability chunks on
-  that statement get `Kolumner: 2025-06-30 | 2024-06-30` in the prefix so retrieval does not
+  that statement get `Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30`
+  in the prefix (and the same dates injected into markdown table headers when possible) so retrieval does not
   lose which year an amount belongs to.
 - **Paragraphs under the same heading are merged** until `chunk_size` is reached, so chunks are
   meaningful units instead of single sentences. Oversized blocks fall back to character
@@ -209,7 +210,8 @@ higher when:
 
 That is why account labels and table headers must survive chunking intact: embeddings may
 prefer nearby prose, but BM25 promotes the chunk that literally contains
-`Balanserat resultat`. Period prefixes such as `Kolumner: 2025-06-30 | 2024-06-30` also
+`Balanserat resultat`. Period prefixes such as
+`Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30` also
 become searchable tokens for the same reason.
 
 ## Schema changes require re-ingestion

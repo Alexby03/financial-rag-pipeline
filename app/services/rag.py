@@ -19,7 +19,7 @@ from app.models.api import (
 from app.models.llm import FigureReading
 from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
-from app.services.lexical import bm25_rank_indices, query_phrase, tokenize
+from app.services.lexical import bm25_rank_indices, content_phrases, tokenize
 from app.services.minio_client import MinioStorage
 from app.services.openai_client import OpenAIService
 from app.services.qdrant_service import QdrantService
@@ -43,20 +43,25 @@ class Candidate:
     rrf_score: float | None = None
 
 RAG_SYSTEM_PROMPT = """You are an Financial analyst assistant.
-Answer using only the provided context.
-Each chunk includes metadata with chunk_id, previous_chunk_id, and next_chunk_id.
-These form a double-linked list within each document — adjacent chunks may continue
-tables, clauses, or org-chart details. Use neighboring context only when the retrieved
-chunk appears incomplete or the question spans multiple sections.
-OCR captions on figure chunks are retrieval hints and are often incomplete.
-When the prompt includes "Authoritative figure readings", a vision model has already
-looked at the stored figure crops. Those readings are primary evidence for plotted
-values (years, totals, series). Prefer them over captions and over prose that does not
-state the same number. Never claim that a year or value is missing if an authoritative
-figure reading reports it. If a reading is approximate, keep that caveat in the answer.
-If the context is still insufficient after those readings, say so.
-Prior conversation turns may be included — resolve follow-ups against that dialogue and
-the current retrieval context together.
+Answer using only the provided context chunks in this turn.
+Each chunk header includes source filename and page number — treat those as ground truth
+for what you have. Never claim a page, table, or line item is missing if it appears
+anywhere in Context chunks. Never ask the user to resend pages that are already in context.
+Prior conversation turns may be wrong about missing data; prefer the current Context chunks
+over earlier assistant denials.
+
+Financial tables often carry period labels as
+"Kolumner (vänster→höger efter radetikett): YYYY-MM-DD | YYYY-MM-DD" and/or as markdown
+table header cells (Post | date1 | date2). Those dates are column headers left→right after
+the row label (first amount column = first date, second = second date). When the user asks
+for calendar year YYYY, use the column whose period ends in YYYY (e.g. 2024-06-30 for
+"2024") unless they specify a different basis. Quote the amount with its period date.
+
+Each chunk includes chunk_id, previous_chunk_id, and next_chunk_id (a double-linked list).
+Use neighbors when a table or clause continues across chunks.
+OCR figure captions are retrieval hints. When "Authoritative figure readings" are present,
+prefer them for plotted numbers. If a reading is approximate, keep that caveat.
+If — after reading every context chunk carefully — the answer is still not present, say so.
 Cite source filenames and page numbers when relevant."""
 
 
@@ -217,12 +222,17 @@ class RagService:
             tie_break = {index: rank for rank, index in enumerate(vector_order, start=1)}
 
         phrase_order = _exact_phrase_ranking(request.question, documents, lexical_order)
+        weights = [1.0, 1.0]
         if phrase_order is not None:
             rankings.append(phrase_order)
+            # Exact rare phrases must outweigh dense+BM25 agreement on cover pages.
+            weights.append(2.0)
+            tie_break = {index: rank for rank, index in enumerate(lexical_order, start=1)}
 
         fused = reciprocal_rank_fusion(
             rankings,
             k=self._settings.rrf_k,
+            weights=weights,
             tie_break_ranks=tie_break,
         )
         selected: list[Candidate] = []
@@ -512,21 +522,48 @@ def _exact_phrase_ranking(
     documents: list[str],
     lexical_order: list[int],
 ) -> list[int] | None:
-    """Third RRF list: docs containing the content-word query phrase, then lexical order.
+    """Third RRF list: docs matching contiguous query phrases, then lexical order.
 
-    Breaks dense/lexical ties when the user asks for an account name that appears
-    verbatim in only one candidate. Function words like "vad är" are ignored.
+    Uses short content phrases (e.g. ``balanserat resultat``), not a join of every
+    content word. Matches are weighted by rarity in the candidate pool so cover-page
+    company-name n-grams do not outrank a unique account line.
     """
-    phrase = query_phrase(query)
-    if phrase is None:
+    phrases = content_phrases(query)
+    if not phrases:
         return None
-    hits = [
-        index
-        for index, document in enumerate(documents)
-        if phrase in " ".join(tokenize(document))
-    ]
-    if not hits:
+
+    joined_docs = [" ".join(tokenize(document)) for document in documents]
+    phrase_df = {
+        phrase: sum(1 for text in joined_docs if phrase in text) for phrase in phrases
+    }
+    # Discriminative phrases only: unique-in-pool first, else the rarest tier.
+    # Cover pages share company-name n-grams; account lines usually appear once.
+    positive_df = [n for n in phrase_df.values() if n > 0]
+    if not positive_df:
         return None
+    unique = [phrase for phrase, n_docs in phrase_df.items() if n_docs == 1]
+    target = set(unique) if unique else {
+        phrase for phrase, n_docs in phrase_df.items() if n_docs == min(positive_df)
+    }
+
+    scored: list[tuple[int, float]] = []
+    for index, text in enumerate(joined_docs):
+        score = 0.0
+        for phrase in target:
+            if phrase not in text:
+                continue
+            n_docs = phrase_df[phrase]
+            score += len(phrase.split()) / n_docs
+            if n_docs == 1:
+                score += 3.0
+        if score > 0:
+            scored.append((index, score))
+    if not scored:
+        return None
+
+    lexical_rank = {index: rank for rank, index in enumerate(lexical_order)}
+    scored.sort(key=lambda item: (-item[1], lexical_rank.get(item[0], 10**9), item[0]))
+    hits = [index for index, _ in scored]
     hit_set = set(hits)
     rest = [index for index in lexical_order if index not in hit_set]
     return hits + rest

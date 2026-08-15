@@ -129,6 +129,62 @@ def test_bm25_promotes_exact_account_name() -> None:
     assert order[0] == 1
 
 
+def test_content_phrases_split_long_swedish_question() -> None:
+    from app.services.lexical import content_phrases
+
+    phrases = content_phrases(
+        "vad var Balanserat resultat i kr 2024 för RTP Radical Technology Products Aktiebolag"
+    )
+    assert "balanserat resultat" in phrases
+    assert not any(phrase.startswith("balanserat resultat kr") for phrase in phrases)
+    # Full-question join must never be treated as one phrase.
+    assert all("2024" not in phrase for phrase in phrases)
+
+
+def test_hybrid_rrf_promotes_account_line_over_company_cover() -> None:
+    """Long questions used to join all content words into one non-matching phrase."""
+    hits = [
+        (
+            build_payload(
+                "cover",
+                "Styrelsen för RTP Radical Technology Products Aktiebolag avger "
+                "årsredovisning för räkenskapsåret 2024-07-01 - 2025-06-30.",
+            ),
+            0.92,
+        ),
+        (
+            build_payload(
+                "disposition",
+                "Förvaltningsberättelse Resultatdisposition "
+                "RTP Radical Technology Products Aktiebolag 556285-8117",
+            ),
+            0.90,
+        ),
+        (
+            build_payload(
+                "equity",
+                "EGET KAPITAL OCH SKULDER\n"
+                "| Post | 2025-06-30 | 2024-06-30 |\n"
+                "| Balanserat resultat | 67 646 | 40 803 |",
+            ),
+            0.55,
+        ),
+    ]
+    response = build_service(None, FakeQdrant(hits)).query(
+        QueryRequest(
+            question=(
+                "vad var Balanserat resultat i kr 2024 för "
+                "RTP Radical Technology Products Aktiebolag"
+            ),
+            tenant_id="tenant_1",
+            top_k=3,
+            rerank=False,
+        )
+    )
+
+    assert response.sources[0].metadata.chunk_id == "equity"
+
+
 def test_hybrid_rrf_promotes_exact_term_over_vector_leader() -> None:
     hits = [
         (build_payload("prose", "Likviditeten stärktes under året."), 0.91),

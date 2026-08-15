@@ -175,14 +175,99 @@ class Chunker:
         headings: dict[int, str],
         column_periods: str | None = None,
     ) -> str:
+        body = text
+        if column_periods:
+            body = Chunker._ensure_table_period_headers(text, column_periods)
         parts: list[str] = []
         if headings:
             parts.append(" > ".join(headings[level] for level in sorted(headings)))
         if column_periods:
-            parts.append(f"Kolumner: {column_periods}")
+            # Explicit left→right map; also mirrored in markdown table headers when possible.
+            parts.append(f"Kolumner (vänster→höger efter radetikett): {column_periods}")
         if not parts:
+            return body
+        return "\n".join(parts) + "\n\n" + body
+
+    @staticmethod
+    def _ensure_table_period_headers(text: str, column_periods: str) -> str:
+        """Put period dates into table headers so models bind amount columns to years."""
+        dates = [part.strip() for part in column_periods.split("|") if part.strip()]
+        if len(dates) < 2:
             return text
-        return "\n".join(parts) + "\n\n" + text
+        with_pipe = Chunker._inject_markdown_table_headers(text, dates)
+        return Chunker._tsv_amount_rows_to_markdown_table(with_pipe, dates)
+
+    @staticmethod
+    def _period_table_header(dates: list[str], value_column_count: int) -> tuple[str, str]:
+        value_headers = dates[:value_column_count]
+        while len(value_headers) < value_column_count:
+            value_headers.append("")
+        header = "| Post | " + " | ".join(value_headers) + " |"
+        separator = "| --- | " + " | ".join([":---:"] * value_column_count) + " |"
+        return header, separator
+
+    @staticmethod
+    def _inject_markdown_table_headers(text: str, dates: list[str]) -> str:
+        lines = text.splitlines()
+        table_indexes = [index for index, line in enumerate(lines) if "|" in line]
+        if not table_indexes:
+            return text
+
+        start = table_indexes[0]
+        end = start
+        while end + 1 < len(lines) and "|" in lines[end + 1]:
+            end += 1
+        table_lines = lines[start : end + 1]
+        if any(len(_ISO_DATE.findall(line)) >= 2 for line in table_lines[:2]):
+            return text
+
+        data_rows = [
+            line
+            for line in table_lines
+            if not re.match(r"^\s*\|?[\s:-]+\|[\s|:-]*$", line)
+        ]
+        if not data_rows:
+            return text
+
+        sample_cells = [cell.strip() for cell in data_rows[0].strip().strip("|").split("|")]
+        column_count = len(sample_cells)
+        if column_count < 3:
+            return text
+
+        header, separator = Chunker._period_table_header(dates, column_count - 1)
+        rebuilt = [header, separator, *data_rows]
+        return "\n".join([*lines[:start], *rebuilt, *lines[end + 1 :]])
+
+    @staticmethod
+    def _tsv_amount_rows_to_markdown_table(text: str, dates: list[str]) -> str:
+        """Rewrite sticky TSV amount blocks as markdown tables with period headers."""
+        lines = text.splitlines()
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            if not Chunker._is_tsv_amount_row(line):
+                output.append(line)
+                index += 1
+                continue
+
+            run: list[str] = []
+            while index < len(lines) and Chunker._is_tsv_amount_row(lines[index]):
+                run.append(lines[index])
+                index += 1
+
+            cells = [part.strip() for part in run[0].split("\t")]
+            if len(cells) < 3:
+                output.extend(run)
+                continue
+
+            header, separator = Chunker._period_table_header(dates, len(cells) - 1)
+            output.append(header)
+            output.append(separator)
+            for row in run:
+                parts = [part.strip() for part in row.split("\t")]
+                output.append("| " + " | ".join(parts) + " |")
+        return "\n".join(output)
 
     @staticmethod
     def _heading_level(block: str) -> int | None:

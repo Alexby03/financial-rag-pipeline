@@ -47,6 +47,8 @@ _STOPWORDS = frozenset(
         "vilken",
         "vilket",
         "vilka",
+        "kr",
+        "sek",
     }
 )
 
@@ -60,11 +62,47 @@ def content_terms(query: str) -> list[str]:
     return [token for token in tokenize(query) if token not in _STOPWORDS and len(token) > 1]
 
 
+def content_phrases(query: str, *, min_len: int = 2, max_len: int = 4) -> list[str]:
+    """Contiguous content-term phrases from the query (not the whole question).
+
+    Stopwords and bare years/numbers break runs so
+    "vad var Balanserat resultat i kr 2024 för RTP Radical …" yields
+    ``balanserat resultat`` and company-name n-grams — never one giant join of
+    every content word (which never matches any chunk).
+    """
+    runs: list[list[str]] = []
+    current: list[str] = []
+    for token in tokenize(query):
+        if token in _STOPWORDS or len(token) <= 1 or token.isdigit():
+            if current:
+                runs.append(current)
+                current = []
+            continue
+        current.append(token)
+    if current:
+        runs.append(current)
+
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for run in runs:
+        windows: list[list[str]] = []
+        if min_len <= len(run) <= max_len:
+            windows.append(run)
+        for size in range(min(max_len, len(run)), min_len - 1, -1):
+            for start in range(0, len(run) - size + 1):
+                windows.append(run[start : start + size])
+        for window in windows:
+            phrase = " ".join(window)
+            if phrase not in seen:
+                seen.add(phrase)
+                phrases.append(phrase)
+    return phrases
+
+
 def query_phrase(query: str) -> str | None:
-    terms = content_terms(query)
-    if len(terms) < 2:
-        return None
-    return " ".join(terms)
+    """Best single phrase for simple callers; prefer ``content_phrases``."""
+    phrases = content_phrases(query)
+    return phrases[0] if phrases else None
 
 
 def bm25_rank_indices(
@@ -107,11 +145,21 @@ def bm25_rank_indices(
             denom = tf + k1 * (1.0 - b + b * lengths[index] / avgdl)
             scores[index] += idf * (tf * (k1 + 1.0) / denom) * q_weight
 
-    # Exact phrase bonus: significant query terms appear contiguously in the document.
-    phrase = query_phrase(query)
-    if phrase:
-        for index, tokens in enumerate(doc_tokens):
-            if phrase in " ".join(tokens):
-                scores[index] += 2.0
+    # Phrase bonus: only rare contiguous matches. Summing every company-name n-gram
+    # otherwise drowns a unique account line that appears in a single candidate.
+    phrases = content_phrases(query)
+    if phrases:
+        joined = [" ".join(tokens) for tokens in doc_tokens]
+        phrase_df = {
+            phrase: sum(1 for text in joined if phrase in text) for phrase in phrases
+        }
+        rarity_cap = max(1, doc_count // 4)
+        for index, text in enumerate(joined):
+            best = 0.0
+            for phrase, n_docs in phrase_df.items():
+                if n_docs == 0 or n_docs > rarity_cap or phrase not in text:
+                    continue
+                best = max(best, (8.0 if n_docs == 1 else 2.0) * (len(phrase.split()) / n_docs))
+            scores[index] += best
 
     return sorted(range(doc_count), key=lambda i: (-scores[i], i))
