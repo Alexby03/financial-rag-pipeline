@@ -192,6 +192,26 @@ keeps its name and replaces itself, and a document that was renamed is still rec
 content. Ingest is therefore idempotent per `(tenant_id, source_filename)` and per
 `(tenant_id, content_hash)` rather than appending duplicates.
 
+## 7. Why chunk text matters for BM25 (query time)
+
+Ingest itself only embeds and stores `raw_text`. At query time the same strings are also
+scored with **BM25** (Best Match 25), a classical lexical ranker used across search engines
+and hybrid RAG stacks. BM25 does not run during ingest; it ranks the dense candidate pool
+when answering. See [rag_strategy.md](rag_strategy.md) for fusion with Cohere and RRF.
+
+In short, BM25 treats the question and each chunk as bags of tokens and scores a chunk
+higher when:
+
+- query terms appear often in that chunk (term frequency, with saturation so repetition
+  does not dominate),
+- those terms are rare across the candidate set (inverse document frequency),
+- and the chunk is not excessively long (length normalization).
+
+That is why account labels and table headers must survive chunking intact: embeddings may
+prefer nearby prose, but BM25 promotes the chunk that literally contains
+`Balanserat resultat`. Period prefixes such as `Kolumner: 2025-06-30 | 2024-06-30` also
+become searchable tokens for the same reason.
+
 ## Schema changes require re-ingestion
 
 `ChunkMetadata` is validated on read. Adding a required field makes every previously stored
