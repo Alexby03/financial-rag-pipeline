@@ -116,8 +116,9 @@ Documents are identified by a sha256 of their bytes, not by filename. The worker
 `status="duplicate"` with the existing chunk count when the tenant already has that content,
 without a second OCR pass. Jobs live only in the API process memory.
 
-Company name, document type, category, year, and quarter may be omitted on upload; OCR fills
-them from the document when it can. If they are still blank after parse, the job fails.
+Company name, document type, category, year, and quarter may be omitted on upload; OCR (or
+SIE `#FNAMN` / `#RAR` for `.sie`/`.si`/`.se`) fills them from the document when it can. If
+they are still blank after parse, the job fails.
 
 ## Query example
 

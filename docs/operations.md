@@ -33,7 +33,15 @@ object it uploaded; leftovers from before that rollback have to be removed in th
 **Ingest job fails with `Could not determine company_name, ...`.**
 OCR `document_annotation` did not fill the blanks and the upload form left them empty. Fill
 them on upload, or re-try with a document that has a readable title page. Do not expect `.txt`
-passthrough to infer metadata.
+passthrough to infer metadata. SIE files can fill `company_name` and `year` from `#FNAMN` /
+`#RAR`, but `category` (and often `doc_type` if you override it) still need the form —
+`accounting_data` is set automatically from the SIE path.
+
+**SIE ingest fails with `Failed to parse SIE file`.**
+The bytes are not valid SIE 4, the encoding is unreadable, or the file is empty. Open the
+file in a text editor and confirm lines start with `#FLAGGA` / `#KONTO` / `#VER`. SIE 5 XML
+is not supported. After changing the SIE parser, delete existing chunks for that document
+before re-uploading or the duplicate hash check will skip the re-parse.
 
 **Ingest job returns `status="duplicate"` and indexes nothing.**
 Expected. The same tenant already has chunks with that content hash, so the worker skipped
