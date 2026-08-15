@@ -45,16 +45,28 @@ is not left behind.
 
 `DocumentParser` sends PDF, Office (DOCX/PPTX), and images to Mistral OCR 4 on Azure AI
 Foundry. The OCR response is mapped to Markdown pages plus optional figures. Plain `.txt` /
-`.md` stay local (verbatim UTF-8) because they are already text. No OpenAI model reads a
-document. Foundry rejects PDFs over 30 pages (`document_parser_too_many_pages`), so a long
-PDF is sliced with pypdf and each slice is OCR'd separately; page numbers are mapped back
-onto the original document.
+`.md` stay local (verbatim UTF-8) because they are already text. Swedish SIE accounting
+files (`.sie` / `.si` / `.se`) are parsed locally into Markdown summaries without OCR. No
+OpenAI model reads a document. Foundry rejects PDFs over 30 pages
+(`document_parser_too_many_pages`), so a long PDF is sliced with pypdf and each slice is
+OCR'd separately; page numbers are mapped back onto the original document.
 
 | Input | Strategy | Output |
 |-------|----------|--------|
 | PDF | Mistral OCR 4, split into 30-page slices (Foundry cap) | Markdown pages + figures |
 | DOCX, PPTX, images | Mistral OCR 4 (`/ocr`, one call) | Markdown pages + figures |
 | Plain text / Markdown | Verbatim decode | Single Markdown page |
+| SIE (`.sie`, `.si`, `.se`) | Lean vendored SIE 4 parser → LLM summaries (no OCR) | Markdown summary pages |
+
+**SIE accounting files.** Swedish SIE 4 exports are tagged plain text (usually CP437). The
+raw bytes are stored in MinIO like any other upload. Parsing never calls OCR: a lean
+adaptation of [magnusfroste/sie-parser](https://github.com/magnusfroste/sie-parser)
+(see [NOTICE.md](../NOTICE.md)) builds balance-sheet / income-statement / transaction
+summaries, rendered as Markdown tables. Those summaries are what the chunker embeds into
+Qdrant — not every voucher line. `doc_type` is set to `accounting_data` and `category`
+defaults to `financing` (they are separate filters — accounting_data is not a category).
+Company name and year are filled from `#FNAMN` / `#RAR` when the upload form leaves them
+blank.
 
 **OCR → Markdown.** Each `pages[].markdown` becomes a `ParsedPage`. Page identity comes from
 `pages[].index`, normalized to 1-based `page_number`. Empty pages are dropped and **not**

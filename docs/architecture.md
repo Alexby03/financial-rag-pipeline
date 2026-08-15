@@ -40,7 +40,9 @@ own.
 Two properties are worth noting in that picture. File bytes never travel back through the API:
 the API hands the browser a short-lived presigned URL and MinIO serves the file directly.
 And every external dependency except Qdrant, OpenAI, and Mistral OCR is optional — the system
-runs with reranking switched off. Plain `.txt` / `.md` ingest does not need OCR.
+runs with reranking switched off. Plain `.txt` / `.md` ingest does not need OCR. Swedish SIE
+accounting files (`.sie` / `.si` / `.se`) are parsed locally into Markdown summaries; the raw
+file still lands in MinIO.
 
 ## Multi-tenancy
 

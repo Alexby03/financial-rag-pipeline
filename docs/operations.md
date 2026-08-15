@@ -33,7 +33,16 @@ object it uploaded; leftovers from before that rollback have to be removed in th
 **Ingest job fails with `Could not determine company_name, ...`.**
 OCR `document_annotation` did not fill the blanks and the upload form left them empty. Fill
 them on upload, or re-try with a document that has a readable title page. Do not expect `.txt`
-passthrough to infer metadata.
+passthrough to infer metadata. SIE files auto-fill `doc_type=accounting_data`,
+`category=financing`, plus `company_name` / `year` from `#FNAMN` / `#RAR` when present.
+`accounting_data` is a document type, not a category — leave category on Auto for SIE.
+
+**SIE ingest fails with `Failed to parse SIE file` or `Could not determine year`.**
+The bytes are not valid SIE 4, or date tags are missing. Open the file and look for
+`#RAR`, `#GEN`, `#OMFATTN`, or `#TAXAR` — not `#PROGRAM … 2011.2.1` (that is software
+version). Tab-separated Norstedts exports are supported. SIE 5 XML is not. After changing
+the SIE parser, delete existing chunks for that document before re-uploading or the
+duplicate hash check will skip the re-parse.
 
 **Ingest job returns `status="duplicate"` and indexes nothing.**
 Expected. The same tenant already has chunks with that content hash, so the worker skipped

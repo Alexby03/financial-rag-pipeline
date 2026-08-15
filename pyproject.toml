@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*"]
+include = ["app*", "third_party*"]
 
 [tool.ruff]
 line-length = 100
