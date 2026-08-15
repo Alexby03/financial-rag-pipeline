@@ -8,6 +8,7 @@ from app.config import Settings
 from app.models.api import (
     ChatTurn,
     FigureReadingTrace,
+    FusionTrace,
     QueryRequest,
     QueryResponse,
     RerankTrace,
@@ -18,10 +19,12 @@ from app.models.api import (
 from app.models.llm import FigureReading
 from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
+from app.services.lexical import bm25_rank_indices, query_phrase, tokenize
 from app.services.minio_client import MinioStorage
 from app.services.openai_client import OpenAIService
 from app.services.qdrant_service import QdrantService
 from app.services.reranker import CohereReranker
+from app.services.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,8 @@ class Candidate:
     vector_score: float
     vector_rank: int
     rerank_score: float | None = None
+    lexical_rank: int | None = None
+    rrf_score: float | None = None
 
 RAG_SYSTEM_PROMPT = """You are an Financial analyst assistant.
 Answer using only the provided context.
@@ -76,12 +81,13 @@ class RagService:
     def query(self, request: QueryRequest) -> QueryResponse:
         retrieval_started = perf_counter()
         reranker = self._reranker if request.rerank else None
+        hybrid = self._settings.hybrid_lexical
 
         query_vector = self._embedder.embed_query(request.question)
         hits = self._qdrant.search(
             query_vector=query_vector,
             tenant_id=request.tenant_id,
-            limit=self._candidate_limit(request.top_k, reranker),
+            limit=self._candidate_limit(request.top_k, reranker, hybrid),
             doc_type=request.doc_type.value if request.doc_type else None,
             category=request.category.value if request.category else None,
             year=request.year,
@@ -92,7 +98,9 @@ class RagService:
             for rank, (payload, score) in enumerate(hits, start=1)
         ]
 
-        selected, rerank_trace = self._apply_rerank(request, candidates, reranker)
+        selected, rerank_trace, fusion_trace = self._select_candidates(
+            request, candidates, reranker, hybrid
+        )
         context_payloads = self._resolve_context(
             [candidate.payload for candidate in selected], request.expand_neighbors
         )
@@ -136,48 +144,101 @@ class RagService:
             generation_ms=generation_ms,
             reasoning_summary=reasoned.reasoning_summary,
             rerank_trace=rerank_trace,
+            fusion_trace=fusion_trace,
             figure_readings=figure_readings,
             vision_ms=vision_ms,
         )
         return QueryResponse(answer=reasoned.answer, sources=sources, trace=trace)
 
-    def _candidate_limit(self, top_k: int, reranker: CohereReranker | None) -> int:
-        if reranker is None:
+    def _candidate_limit(
+        self,
+        top_k: int,
+        reranker: CohereReranker | None,
+        hybrid: bool,
+    ) -> int:
+        if reranker is None and not hybrid:
             return top_k
         return top_k * self._settings.rerank_candidate_multiplier
 
-    def _apply_rerank(
+    def _select_candidates(
         self,
         request: QueryRequest,
         candidates: list[Candidate],
         reranker: CohereReranker | None,
-    ) -> tuple[list[Candidate], RerankTrace | None]:
-        if reranker is None:
-            return candidates[: request.top_k], None
+        hybrid: bool,
+    ) -> tuple[list[Candidate], RerankTrace | None, FusionTrace | None]:
+        if not candidates:
+            return [], None, None
 
-        rerank_started = perf_counter()
-        outcome = reranker.rerank(
-            query=request.question,
-            documents=[candidate.payload.raw_text for candidate in candidates],
-            top_n=request.top_k,
+        rerank_trace: RerankTrace | None = None
+        cohere_order: list[int] | None = None
+
+        if reranker is not None:
+            rerank_started = perf_counter()
+            # Ask Cohere for the full candidate pool so RRF can use its full ranking.
+            outcome = reranker.rerank(
+                query=request.question,
+                documents=[candidate.payload.raw_text for candidate in candidates],
+                top_n=len(candidates),
+            )
+            rerank_trace = RerankTrace(
+                model=reranker.model,
+                candidates=len(candidates),
+                applied=outcome.applied,
+                fallback_reason=outcome.fallback_reason,
+                rerank_ms=self._elapsed_ms(rerank_started),
+            )
+            if outcome.applied:
+                cohere_order = []
+                for document in outcome.documents:
+                    candidates[document.index].rerank_score = document.relevance_score
+                    cohere_order.append(document.index)
+
+        if not hybrid and cohere_order is not None:
+            selected = [candidates[index] for index in cohere_order[: request.top_k]]
+            return selected, rerank_trace, None
+
+        if not hybrid:
+            return candidates[: request.top_k], rerank_trace, None
+
+        vector_order = list(range(len(candidates)))
+        documents = [candidate.payload.raw_text for candidate in candidates]
+        lexical_order = bm25_rank_indices(request.question, documents)
+        for lexical_rank, index in enumerate(lexical_order, start=1):
+            candidates[index].lexical_rank = lexical_rank
+
+        # Dense+sparse RRF is the industry default. When Cohere ran, use its order
+        # instead of raw vector order (cross-encoder already judged semantics).
+        if cohere_order is not None:
+            rankings = [cohere_order, lexical_order]
+            tie_break = {index: rank for rank, index in enumerate(cohere_order, start=1)}
+        else:
+            rankings = [vector_order, lexical_order]
+            tie_break = {index: rank for rank, index in enumerate(vector_order, start=1)}
+
+        phrase_order = _exact_phrase_ranking(request.question, documents, lexical_order)
+        if phrase_order is not None:
+            rankings.append(phrase_order)
+
+        fused = reciprocal_rank_fusion(
+            rankings,
+            k=self._settings.rrf_k,
+            tie_break_ranks=tie_break,
         )
-        trace = RerankTrace(
-            model=reranker.model,
+        selected: list[Candidate] = []
+        for index, rrf_score in fused[: request.top_k]:
+            candidate = candidates[index]
+            candidate.rrf_score = rrf_score
+            selected.append(candidate)
+
+        fusion_trace = FusionTrace(
+            method="rrf",
+            lexical_applied=True,
+            cohere_applied=cohere_order is not None,
             candidates=len(candidates),
-            applied=outcome.applied,
-            fallback_reason=outcome.fallback_reason,
-            rerank_ms=self._elapsed_ms(rerank_started),
+            rrf_k=self._settings.rrf_k,
         )
-
-        if not outcome.applied:
-            return candidates[: request.top_k], trace
-
-        reordered: list[Candidate] = []
-        for document in outcome.documents:
-            candidate = candidates[document.index]
-            candidate.rerank_score = document.relevance_score
-            reordered.append(candidate)
-        return reordered[: request.top_k], trace
+        return selected, rerank_trace, fusion_trace
 
     def _build_trace(
         self,
@@ -188,6 +249,7 @@ class RagService:
         generation_ms: int,
         reasoning_summary: str,
         rerank_trace: RerankTrace | None,
+        fusion_trace: FusionTrace | None,
         figure_readings: list[FigureReading],
         vision_ms: int,
     ) -> RetrievalTrace:
@@ -216,6 +278,8 @@ class RagService:
                     preview=self._preview(candidate.payload.raw_text),
                     vector_rank=candidate.vector_rank,
                     rerank_score=candidate.rerank_score,
+                    lexical_rank=candidate.lexical_rank,
+                    rrf_score=candidate.rrf_score,
                 )
                 for candidate in selected
             ],
@@ -231,6 +295,7 @@ class RagService:
             vision_model=self._settings.openai_vision_model if figure_readings else "",
             reasoning_summary=reasoning_summary,
             rerank=rerank_trace,
+            fusion=fusion_trace,
             figure_readings=[
                 FigureReadingTrace(
                     chunk_id=reading.chunk_id,
@@ -440,3 +505,28 @@ class RagService:
                 lines.extend(["", "Vision reading:", reading.reading])
             sections.append("\n".join(lines))
         return "\n\n---\n\n".join(sections)
+
+
+def _exact_phrase_ranking(
+    query: str,
+    documents: list[str],
+    lexical_order: list[int],
+) -> list[int] | None:
+    """Third RRF list: docs containing the content-word query phrase, then lexical order.
+
+    Breaks dense/lexical ties when the user asks for an account name that appears
+    verbatim in only one candidate. Function words like "vad är" are ignored.
+    """
+    phrase = query_phrase(query)
+    if phrase is None:
+        return None
+    hits = [
+        index
+        for index, document in enumerate(documents)
+        if phrase in " ".join(tokenize(document))
+    ]
+    if not hits:
+        return None
+    hit_set = set(hits)
+    rest = [index for index in lexical_order if index not in hit_set]
+    return hits + rest

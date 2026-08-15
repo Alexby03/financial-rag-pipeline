@@ -103,9 +103,9 @@ def render_trace(response: QueryResponse) -> None:
         st.caption(f"Embedding model `{trace.embedding_model}`, top_k {trace.top_k}")
         st.write({key: str(value) for key, value in trace.filters.items()})
 
-        st.markdown("**2. Reranking**")
+        st.markdown("**2. Reranking and fusion**")
         if trace.rerank is None:
-            st.caption("Off — order comes from vector search.")
+            st.caption("Cohere rerank: off.")
         elif trace.rerank.applied:
             st.caption(
                 f"`{trace.rerank.model}` reranked {trace.rerank.candidates} candidates "
@@ -116,13 +116,21 @@ def render_trace(response: QueryResponse) -> None:
                 "Reranking was skipped; vector order was kept. "
                 f"{trace.rerank.fallback_reason}"
             )
+        if trace.fusion is not None and trace.fusion.lexical_applied:
+            lists = "Cohere + BM25" if trace.fusion.cohere_applied else "vector + BM25"
+            st.caption(
+                f"RRF fusion ({lists}, k={trace.fusion.rrf_k}) over "
+                f"{trace.fusion.candidates} candidates."
+            )
 
         st.markdown("**3. Hits and similarity**")
         if trace.hits:
             st.dataframe(
                 [
                     {
-                        "Vector rank": hit.vector_rank,
+                        "Vector": hit.vector_rank,
+                        "Lexical": "—" if hit.lexical_rank is None else hit.lexical_rank,
+                        "RRF": "—" if hit.rrf_score is None else round(hit.rrf_score, 4),
                         "Score": round(hit.score, 4),
                         "Rerank": "—" if hit.rerank_score is None else round(hit.rerank_score, 4),
                         "Source": hit.source_filename,

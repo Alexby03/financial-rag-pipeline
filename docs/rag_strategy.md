@@ -6,7 +6,7 @@ How a question becomes an answer with citations. The write side is described in
 Entry point: `POST /query` → `RagService.query`.
 
 ```
-question → embed → filtered vector search → rerank → neighbour expansion → figure vision → answer
+question → embed → filtered vector search → (Cohere) → BM25 + RRF fuse → neighbours → vision → answer
 ```
 
 Each step is recorded in a `RetrievalTrace` returned with the answer, so the UI can show what
@@ -24,32 +24,42 @@ Qdrant is queried with a `must` filter on `metadata.tenant_id`, plus any of `doc
 `category`, `year` and `quarter` supplied in the request. Tenant isolation is enforced here, at
 the database, not in application code after the fact.
 
-The number of candidates fetched is **not** `top_k`. When reranking is active it is
-`top_k * RERANK_CANDIDATE_MULTIPLIER`, because the reranker can only choose from what vector
-search hands it. Raising `top_k` alone does not widen the pool.
+The number of candidates fetched is **not** `top_k`. When Cohere rerank **or** hybrid lexical
+fusion is active it is `top_k * RERANK_CANDIDATE_MULTIPLIER`, because both the reranker and
+BM25 can only promote chunks that vector search already returned. Raising `top_k` alone does
+not widen the pool.
 
 Note that `client.search()` was removed in qdrant-client 1.16; the current call is
 `client.query_points()`, whose results live on `response.points`.
 
-## 3. Reranking (Cohere Rerank on Azure AI Foundry)
+## 3. Hybrid fusion (BM25 + RRF) and Cohere rerank
 
 Embedding similarity ranks by how alike two texts look, which buries chunks whose wording
-differs from the question even when they hold the answer. The reranker scores each candidate
-against the question directly and keeps the best `top_k`.
+matches the question exactly (account names, "Balanserat resultat") when nearby prose scores
+higher. Industry default is **hybrid retrieval**: dense rank + lexical rank, fused with
+**Reciprocal Rank Fusion** (RRF, Cormack et al.):
 
-Observed on the Q3 report: the financial table sat at cosine similarity 0.638 while a prose
-paragraph about liquidity scored higher; the reranker gave the table 0.952 and moved it to
-first place, dropping the chunk that vector search had ranked second.
+```
+score(d) = Σ 1 / (k + rank_i(d))   with k = 60 by default
+```
 
-Reranking is optional at three levels:
+Here lexical rank is **local BM25 over the dense candidate pool** (no extra Qdrant index),
+plus a phrase bonus when the full query appears in the chunk. That is enough to lift exact
+terms without re-embedding the collection.
+
+When Cohere Rerank is on, RRF fuses **Cohere order + BM25** (the cross-encoder already
+replaced raw vector order). When Cohere is off or fails open, RRF fuses **vector + BM25**.
+`HYBRID_LEXICAL=false` disables the BM25 leg; `RRF_K` tunes the fusion constant.
+
+Cohere remains optional at three levels:
 
 1. It is inactive unless both `COHERE_API_BASE` and `COHERE_API_KEY` are set.
 2. `QueryRequest.rerank` turns it off per query.
-3. Any failure falls back to vector order rather than failing the request.
+3. Any failure falls back to vector+BM25 fusion rather than failing the request.
 
-The fallback is deliberate but silent by design, so a misconfiguration looks like a working
-system. The reason is always reported in `trace.rerank.fallback_reason` and rendered as a
-warning in the UI — that is where to look first when results feel unchanged.
+The Cohere fallback reason is always reported in `trace.rerank.fallback_reason` and rendered
+as a warning in the UI. Fusion details land on `trace.fusion` (method, lexical/cohere flags,
+`rrf_k`). Hit rows also expose `lexical_rank` and `rrf_score`.
 
 Two operational traps are worth repeating:
 
@@ -59,9 +69,8 @@ Two operational traps are worth repeating:
   Cohere deployments. `build_rerank_url` normalizes them: a base already ending in `/rerank` is
   used as is, one ending in `/providers/cohere` gets `/v2/rerank`, anything else gets `/rerank`.
 
-`score` (cosine similarity) and `rerank_score` (Cohere relevance) are on different scales and
-must not be compared or thresholded against each other. Both are exposed separately for exactly
-that reason.
+`score` (cosine), `rerank_score` (Cohere), and `rrf_score` are different scales — do not
+threshold them against each other.
 
 ## 4. Neighbour expansion
 
@@ -69,7 +78,7 @@ Chunks form a double-linked list within each document. When `expand_neighbors` i
 `previous_chunk_id` and `next_chunk_id` of every selected chunk are fetched and merged into the
 context, then ordered back into reading order per source file.
 
-This runs *after* reranking, so neighbours are fetched for the chunks that were actually
+This runs *after* fusion, so neighbours are fetched for the chunks that were actually
 selected rather than for candidates that were about to be discarded.
 
 ## 5. Figure vision, then generation
