@@ -1,7 +1,8 @@
 # Operations
 
 What breaks, why, and what this MVP does not do yet. The pipelines themselves are described in
-[ingestion_pipeline.md](ingestion_pipeline.md) and [rag_strategy.md](rag_strategy.md).
+[ingestion_pipeline.md](ingestion_pipeline.md), [rag_strategy.md](rag_strategy.md),
+and [ranking.md](ranking.md).
 Parse-specific behaviour (SIE, XHTML, Excel, OCR) is in
 [document_formats.md](document_formats.md).
 
@@ -109,13 +110,14 @@ dropped INOD and ranked every growing-market deck by BM25/RRF. Prior user turns 
 concatenated onto the question (`trace.retrieval_question`) and entity scope inherits the
 company from those turns. If the wrong issuer still wins, the first turn never named a
 company that matches `metadata.company_name`, or `chat_history` was not sent (Clear chat /
-tab reload). See [rag_strategy.md](rag_strategy.md) §1–3.
+tab reload). See [ranking.md](ranking.md) §1–2.
 
 **`top_k=5` becomes a single source after entity filtering.**
 Hard-drop removes other companies from the first mixed vector pool. An older build then
 handed whatever was left to the reasoner — often one INOD chunk. Retrieval now re-queries
 Qdrant with that `company_name` so the candidate window fills back up to `top_k`. If you
-still see one hit, that company only has one chunk in the index.
+still see one hit, that company only has one chunk in the index. See
+[ranking.md](ranking.md) §2 and §5.
 
 **A presigned URL returns 403 on `HEAD`.**
 Presigned URLs are signed for a specific HTTP method. Use `GET`.

@@ -58,5 +58,7 @@ known gaps.
 
 - [ingestion_pipeline.md](ingestion_pipeline.md) — how documents become searchable
 - [document_formats.md](document_formats.md) — how each file type becomes Markdown
-- [rag_strategy.md](rag_strategy.md) — how they are retrieved and answered
+- [rag_strategy.md](rag_strategy.md) — how a question becomes an answer (map)
+- [ranking.md](ranking.md) — recall, BM25, RRF, Cohere, entity scope
+- [answering.md](answering.md) — neighbours, vision, generation, sources
 - [operations.md](operations.md) — failure modes, limitations and risks

@@ -1,4 +1,4 @@
-"""RAG query path — see docs/rag_strategy.md for linked-chunk retrieval rules."""
+"""RAG query path — see docs/rag_strategy.md and docs/ranking.md."""
 
 import logging
 from dataclasses import dataclass

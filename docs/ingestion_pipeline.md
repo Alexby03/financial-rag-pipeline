@@ -2,7 +2,7 @@
 
 How a document becomes searchable. How each file type becomes Markdown is described in
 [document_formats.md](document_formats.md). The retrieval side is in
-[rag_strategy.md](rag_strategy.md).
+[rag_strategy.md](rag_strategy.md). Ranking is [ranking.md](ranking.md).
 
 Entry point: `POST /ingest` accepts the upload and returns `202` with a `job_id`. A lifespan
 worker drains an in-memory queue and runs `IngestService.ingest` off the event loop. Poll
@@ -89,7 +89,7 @@ Each chunk records the page it came from. Defaults are `chunk_size=800` and `chu
 
 Account labels and table headers must survive chunking intact: at query time the same
 `raw_text` is also scored lexically (BM25) alongside dense rank. See
-[rag_strategy.md](rag_strategy.md) for hybrid fusion with Cohere and RRF.
+[ranking.md](ranking.md) for hybrid fusion with Cohere and RRF.
 
 ## 4. Linking
 
