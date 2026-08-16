@@ -5,7 +5,7 @@ import pytest
 
 from app.config import Settings
 from app.models.api import IngestMetadata
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.models.metadata import ChunkMetadata, QdrantPayload
 from app.models.ocr import OcrDocumentAnnotation
 from app.models.parsed import ParsedContent, ParsedFigure, ParsedPage
@@ -27,7 +27,7 @@ INGEST_METADATA = IngestMetadata(
     category=Category.FINANCING,
     year=2024,
     quarter=3,
-    language="sv",
+    language=Language.SV,
 )
 
 
@@ -226,6 +226,7 @@ def test_ocr_annotation_fills_blank_form_fields() -> None:
             category=Category.FINANCING,
             year=2024,
             quarter=3,
+            language=Language.SV,
         )
     )
     service = build_service(qdrant, parser)
@@ -239,6 +240,7 @@ def test_ocr_annotation_fills_blank_form_fields() -> None:
     assert meta.doc_type == DocType.FINANCIAL_REPORT
     assert meta.year == 2024
     assert meta.quarter == 3
+    assert meta.language == Language.SV
 
 
 def test_submitted_form_fields_win_over_annotation() -> None:
@@ -249,6 +251,7 @@ def test_submitted_form_fields_win_over_annotation() -> None:
         category=Category.LEGAL,
         year=2023,
         quarter=1,
+        language=Language.EN,
     )
     annotation = OcrDocumentAnnotation(
         company_name="SME Corp AB",
@@ -256,6 +259,7 @@ def test_submitted_form_fields_win_over_annotation() -> None:
         category=Category.FINANCING,
         year=2024,
         quarter=3,
+        language=Language.SV,
     )
 
     merged = merge_ingest_metadata(submitted, annotation)
@@ -264,6 +268,7 @@ def test_submitted_form_fields_win_over_annotation() -> None:
     assert merged.doc_type == DocType.AGREEMENT
     assert merged.year == 2023
     assert merged.quarter == 1
+    assert merged.language == Language.EN
 
 
 def test_missing_metadata_after_merge_fails_the_job() -> None:

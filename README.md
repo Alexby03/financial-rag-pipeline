@@ -107,8 +107,8 @@ curl -X POST "http://localhost:8000/ingest" \
   -F "doc_type=financial_report" \
   -F "category=financing" \
   -F "year=2024" \
-  -F "quarter=3" \
-  -F "language=sv"
+  -F "quarter=3"
+# language is optional — OCR fills sv/en/dk/no/… when omitted
 # → {"job_id":"...","status":"queued"}
 
 # Poll until completed / duplicate / failed
@@ -119,9 +119,9 @@ Documents are identified by a sha256 of their bytes, not by filename. The worker
 `status="duplicate"` with the existing chunk count when the tenant already has that content,
 without a second OCR pass. Jobs live only in the API process memory.
 
-Company name, document type, category, year, and quarter may be omitted on upload; OCR (or
-SIE `#FNAMN` / `#RAR` for `.sie`/`.si`/`.se`) fills them from the document when it can. If
-they are still blank after parse, the job fails.
+Company name, document type, category, year, quarter, and language may be omitted on upload;
+OCR (or SIE `#FNAMN` / `#RAR` for `.sie`/`.si`/`.se`) fills them from the document when it
+can. SIE defaults language to `sv`. If they are still blank after parse, the job fails.
 
 ## Query example
 

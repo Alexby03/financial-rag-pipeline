@@ -13,7 +13,7 @@ from app.models.api import (
     SourceChunk,
     SourceUrlResponse,
 )
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 
 DEFAULT_API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
 DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "default_tenant_test_corp_123")
@@ -441,7 +441,12 @@ with upload_tab:
             options=[None, 1, 2, 3, 4],
             format_func=lambda x: "Auto" if x is None else f"Q{x}",
         )
-        language = st.text_input("Language", value="sv")
+        upload_language = st.selectbox(
+            "Language",
+            options=[None, *Language],
+            format_func=lambda x: "Auto" if x is None else x.value,
+            key="upload_language",
+        )
         submitted = st.form_submit_button("Upload and index")
 
     if submitted:
@@ -452,7 +457,6 @@ with upload_tab:
                 try:
                     ingest_data: dict[str, object] = {
                         "tenant_id": tenant_id,
-                        "language": language,
                     }
                     if company_name.strip():
                         ingest_data["company_name"] = company_name.strip()
@@ -464,6 +468,8 @@ with upload_tab:
                         ingest_data["year"] = int(upload_year)
                     if upload_quarter:
                         ingest_data["quarter"] = upload_quarter
+                    if upload_language is not None:
+                        ingest_data["language"] = upload_language.value
                     accepted = submit_ingest(
                         api_url,
                         files={"file": (uploaded.name, uploaded.getvalue(), uploaded.type)},

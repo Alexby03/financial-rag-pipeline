@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from app.config import Settings
 from app.models.api import IngestMetadata
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.models.metadata import ChunkMetadata, QdrantPayload
 from app.models.parsed import ParsedPage
 
@@ -176,7 +176,7 @@ class Chunker:
                 chunk_id=chunk_ids[index],
                 previous_chunk_id=chunk_ids[index - 1] if index > 0 else None,
                 next_chunk_id=chunk_ids[index + 1] if index < len(chunks) - 1 else None,
-                language=ingest_metadata.language,
+                language=_required_language(ingest_metadata),
                 processed_timestamp=processed_at,
             )
             payloads.append(QdrantPayload(raw_text=chunk.text, metadata=metadata))
@@ -449,3 +449,9 @@ def _required_year(metadata: IngestMetadata) -> int:
     if metadata.year is None:
         raise ValueError("year is required before indexing")
     return metadata.year
+
+
+def _required_language(metadata: IngestMetadata) -> Language:
+    if metadata.language is None:
+        raise ValueError("language is required before indexing")
+    return metadata.language

@@ -170,7 +170,7 @@ def test_ingest_endpoint_accepts_omitted_metadata_fields() -> None:
         response = client.post(
             "/ingest",
             files={"file": ("report.pdf", b"%PDF-1.7", "application/pdf")},
-            data={"tenant_id": "tenant_1", "language": "sv"},
+            data={"tenant_id": "tenant_1"},
         )
         assert response.status_code == 202
         job_id = response.json()["job_id"]
@@ -181,6 +181,7 @@ def test_ingest_endpoint_accepts_omitted_metadata_fields() -> None:
     assert stored.metadata.company_name is None
     assert stored.metadata.doc_type is None
     assert stored.metadata.year is None
+    assert stored.metadata.language is None
 
 
 def test_missing_ingest_job_returns_404() -> None:

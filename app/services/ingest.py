@@ -152,6 +152,7 @@ def merge_ingest_metadata(
     category = submitted.category or source.category
     year = submitted.year if submitted.year is not None else source.year
     quarter = submitted.quarter if submitted.quarter is not None else source.quarter
+    language = submitted.language or source.language
 
     missing: list[str] = []
     if company_name is None:
@@ -162,6 +163,8 @@ def merge_ingest_metadata(
         missing.append("category")
     if year is None:
         missing.append("year")
+    if language is None:
+        missing.append("language")
     if missing:
         raise IngestMetadataError(
             "Could not determine "
@@ -173,6 +176,7 @@ def merge_ingest_metadata(
     assert doc_type is not None
     assert category is not None
     assert year is not None
+    assert language is not None
 
     return IngestMetadata(
         tenant_id=submitted.tenant_id,
@@ -181,7 +185,7 @@ def merge_ingest_metadata(
         category=category,
         year=year,
         quarter=quarter,
-        language=submitted.language,
+        language=language,
     )
 
 

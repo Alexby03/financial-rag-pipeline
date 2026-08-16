@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.models.ocr import OcrDocumentAnnotation
 from app.models.parsed import ParsedContent, ParsedPage
 from third_party.magnusfroste_sie_parser import SIEParser, process_for_llm
@@ -81,6 +81,7 @@ def _annotation_from_sie(llm_data: dict[str, Any]) -> OcrDocumentAnnotation:
         doc_type=DocType.ACCOUNTING_DATA,
         category=Category.FINANCING,
         year=year,
+        language=Language.SV,
     )
 
 

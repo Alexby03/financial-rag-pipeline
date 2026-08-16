@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.models.metadata import ChunkMetadata
 
 IngestJobStatus = Literal["queued", "running", "completed", "failed", "duplicate"]
@@ -16,7 +16,8 @@ class IngestMetadata(BaseModel):
     category: Category | None = None
     year: int | None = None
     quarter: int | None = Field(default=None, ge=1, le=4)
-    language: str = "sv"
+    # None means Auto — filled from OCR / parser annotation at ingest time.
+    language: Language | None = None
 
 
 class IngestResponse(BaseModel):

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.api.deps import get_ingest_job_manager
 from app.models.api import IngestJobAccepted, IngestJobStatusResponse, IngestMetadata
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.services.ingest_jobs import IngestJobManager
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -17,7 +17,7 @@ async def ingest_document(
     category: Category | None = Form(default=None),
     year: int | None = Form(default=None),
     quarter: int | None = Form(default=None),
-    language: str = Form(default="sv"),
+    language: Language | None = Form(default=None),
     jobs: IngestJobManager = Depends(get_ingest_job_manager),
 ) -> IngestJobAccepted:
     file_bytes = await file.read()

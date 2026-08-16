@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 
 
 class FigureBBoxAnnotation(BaseModel):
@@ -44,4 +44,11 @@ class OcrDocumentAnnotation(BaseModel):
         ge=1,
         le=4,
         description="Fiscal quarter 1-4, or omit if the document is not quarterly.",
+    )
+    language: Language | None = Field(
+        default=None,
+        description=(
+            "Primary language of the document body as an allowed enum code "
+            "(sv, en, dk, no, fi, de, fr, other)."
+        ),
     )

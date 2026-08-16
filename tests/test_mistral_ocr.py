@@ -7,7 +7,7 @@ import pytest
 from pypdf import PdfWriter
 
 from app.config import Settings
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.services.mistral_ocr import (
     MistralOcrClient,
     MistralOcrError,
@@ -148,21 +148,37 @@ def test_missing_config_raises_before_http() -> None:
 def test_document_annotation_accepts_json_string_and_q_prefix() -> None:
     annotation = parse_document_annotation(
         '{"company_name": "SME Corp AB", "doc_type": "minutes", '
-        '"category": "legal", "year": "2024", "quarter": "Q2"}'
+        '"category": "legal", "year": "2024", "quarter": "Q2", "language": "sv"}'
     )
     assert annotation is not None
     assert annotation.doc_type == DocType.MINUTES
     assert annotation.category == Category.LEGAL
     assert annotation.year == 2024
     assert annotation.quarter == 2
+    assert annotation.language == Language.SV
+
+
+def test_document_annotation_normalizes_language_aliases() -> None:
+    swedish = parse_document_annotation({"language": "Swedish"})
+    danish = parse_document_annotation({"language": "da"})
+    region = parse_document_annotation({"language": "en-US"})
+    assert swedish is not None and swedish.language == Language.SV
+    assert danish is not None and danish.language == Language.DK
+    assert region is not None and region.language == Language.EN
 
 
 def test_unknown_enum_values_are_dropped() -> None:
     annotation = parse_document_annotation(
-        {"company_name": "SME Corp AB", "doc_type": "annual_report", "year": 2024}
+        {
+            "company_name": "SME Corp AB",
+            "doc_type": "annual_report",
+            "year": 2024,
+            "language": "klingon",
+        }
     )
     assert annotation is not None
     assert annotation.doc_type is None
+    assert annotation.language is None
     assert annotation.company_name == "SME Corp AB"
     assert annotation.year == 2024
 

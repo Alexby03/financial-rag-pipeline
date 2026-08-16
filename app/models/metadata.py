@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 
 
 class ChunkMetadata(BaseModel):
@@ -22,7 +22,7 @@ class ChunkMetadata(BaseModel):
     chunk_id: str
     previous_chunk_id: str | None
     next_chunk_id: str | None
-    language: str
+    language: Language
     processed_timestamp: datetime
 
 

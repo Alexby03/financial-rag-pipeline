@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.services.mistral_ocr import OcrResult
 from app.services.parser import DocumentParser
 from app.services.sie import is_sie_filename, parse_sie_bytes
@@ -40,6 +40,7 @@ def test_parse_sie_bytes_builds_markdown_summaries() -> None:
     assert parsed.annotation.doc_type == DocType.ACCOUNTING_DATA
     assert parsed.annotation.category == Category.FINANCING
     assert parsed.annotation.year == 2024
+    assert parsed.annotation.language == Language.SV
 
 
 def test_parse_sie_bytes_rejects_empty() -> None:
@@ -60,6 +61,7 @@ def test_sie_annotation_defaults_category_and_finds_year_in_period() -> None:
     assert annotation.category == Category.FINANCING
     assert annotation.year == 2023
     assert annotation.company_name == "Sparse AB"
+    assert annotation.language == Language.SV
 
 
 def test_norstedts_tab_separated_sie_fills_year_not_program_version() -> None:

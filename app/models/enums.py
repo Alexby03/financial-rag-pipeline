@@ -23,3 +23,16 @@ class Category(StrEnum):
     M_AND_A = "m_and_a"
     STRATEGY_MARKET = "strategy_market"
     OTHER = "other"
+
+
+class Language(StrEnum):
+    """ISO-ish language codes stored on every chunk. Danish uses `dk` (not `da`)."""
+
+    SV = "sv"
+    EN = "en"
+    DK = "dk"
+    NO = "no"
+    FI = "fi"
+    DE = "de"
+    FR = "fr"
+    OTHER = "other"

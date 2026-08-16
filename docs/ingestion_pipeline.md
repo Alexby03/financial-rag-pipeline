@@ -131,6 +131,12 @@ Valid enums:
   `presentation`, `report_analysis`, `policy_regulation`, `transaction_doc`, `other`
 - `category`: `hr`, `financing`, `legal`, `operations`, `compliance_governance`, `m_and_a`,
   `strategy_market`, `other`
+- `language`: `sv`, `en`, `dk`, `no`, `fi`, `de`, `fr`, `other`
+
+Company name, document type, category, year, quarter, and language may be left blank on
+upload. OCR `document_annotation` (and SIE / Excel local parsers where they can) fills the
+gaps; explicit form values win. SIE ledgers default `language` to `sv`. If a required field
+is still blank after merge, the job fails.
 
 `app/scripts/init_qdrant.py` creates the collection with cosine distance and payload indexes on
 `tenant_id`, `doc_type`, `category`, `year`, `quarter`, `company_name` and `source_filename`.

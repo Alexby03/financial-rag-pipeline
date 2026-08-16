@@ -41,9 +41,11 @@ use OCR and can hit the same limit on very large Office packages.
 **Ingest job fails with `Could not determine company_name, ...`.**
 OCR `document_annotation` did not fill the blanks and the upload form left them empty. Fill
 them on upload, or re-try with a document that has a readable title page. Do not expect `.txt`
-passthrough to infer metadata. SIE files auto-fill `doc_type=accounting_data`,
-`category=financing`, plus `company_name` / `year` from `#FNAMN` / `#RAR` when present.
-`accounting_data` is a document type, not a category — leave category on Auto for SIE.
+passthrough to infer metadata. Language is assessed the same way (`sv`, `en`, `dk`, `no`,
+`fi`, `de`, `fr`, `other`) unless you set it on the form. SIE files auto-fill
+`doc_type=accounting_data`, `category=financing`, `language=sv`, plus `company_name` / `year`
+from `#FNAMN` / `#RAR` when present. `accounting_data` is a document type, not a category —
+leave category on Auto for SIE.
 
 **SIE ingest fails with `Failed to parse SIE file` or `Could not determine year`.**
 The bytes are not valid SIE 4, or date tags are missing. Open the file and look for

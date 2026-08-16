@@ -19,13 +19,15 @@ from pydantic import BaseModel, ValidationError
 from pypdf import PdfReader, PdfWriter
 
 from app.config import Settings
-from app.models.enums import Category, DocType
+from app.models.enums import Category, DocType, Language
 from app.models.ocr import FigureBBoxAnnotation, OcrDocumentAnnotation
 
 DOCUMENT_ANNOTATION_PROMPT = (
     "Extract metadata for an Financial document archive. "
     "company_name is the company the document is about. "
-    "doc_type and category must be one of the allowed enum values. "
+    "doc_type, category, and language must be one of the allowed enum values. "
+    "language is the primary language of the document body "
+    "(sv, en, dk, no, fi, de, fr, or other). "
     "year is the fiscal or calendar year. quarter is 1-4 only for quarterly documents."
 )
 
@@ -209,6 +211,9 @@ def parse_document_annotation(raw: object) -> OcrDocumentAnnotation | None:
     quarter = _coerce_quarter(data.get("quarter"))
     if quarter is not None:
         parsed["quarter"] = quarter
+    language = _coerce_language(data.get("language"))
+    if language is not None:
+        parsed["language"] = language
     if not parsed:
         return None
     try:
@@ -296,6 +301,40 @@ def _coerce_enum(value: object, enum_cls: type[EnumT]) -> EnumT | None:
         return enum_cls(str(value).strip())
     except ValueError:
         return None
+
+
+# OCR sometimes returns names or ISO codes we map onto Language.
+_LANGUAGE_ALIASES: dict[str, str] = {
+    "swedish": "sv",
+    "svenska": "sv",
+    "english": "en",
+    "danish": "dk",
+    "dansk": "dk",
+    "da": "dk",
+    "norwegian": "no",
+    "norsk": "no",
+    "nb": "no",
+    "nn": "no",
+    "finnish": "fi",
+    "suomi": "fi",
+    "german": "de",
+    "deutsch": "de",
+    "french": "fr",
+    "francais": "fr",
+    "français": "fr",
+}
+
+
+def _coerce_language(value: object) -> Language | None:
+    if value is None:
+        return None
+    raw = str(value).strip().lower().replace("_", "-")
+    if not raw:
+        return None
+    # Region tags like sv-SE / en_US → primary subtag.
+    primary = raw.split("-", 1)[0]
+    code = _LANGUAGE_ALIASES.get(raw) or _LANGUAGE_ALIASES.get(primary) or primary
+    return _coerce_enum(code, Language)
 
 
 def _coerce_int(value: object) -> int | None:
