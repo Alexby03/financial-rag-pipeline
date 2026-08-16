@@ -19,6 +19,7 @@ from app.models.api import (
 from app.models.llm import FigureReading
 from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
+from app.services.entity_scope import entity_rank_indices, filter_indices_to_scope
 from app.services.lexical import bm25_rank_indices, content_phrases, tokenize
 from app.services.minio_client import MinioStorage
 from app.services.openai_client import OpenAIService
@@ -62,7 +63,10 @@ Use neighbors when a table or clause continues across chunks.
 OCR figure captions are retrieval hints. When "Authoritative figure readings" are present,
 prefer them for plotted numbers. If a reading is approximate, keep that caveat.
 If — after reading every context chunk carefully — the answer is still not present, say so.
-Cite source filenames and page numbers when relevant."""
+Cite source filenames and page numbers when relevant.
+When the user names a company, year, or quarter, use only chunks for that entity. Never
+blend figures or account lists from another company or period that happen to appear in
+Context — say those other sources are out of scope instead of merging them."""
 
 
 
@@ -97,6 +101,7 @@ class RagService:
             category=request.category.value if request.category else None,
             year=request.year,
             quarter=request.quarter,
+            company_name=request.company_name,
         )
         candidates = [
             Candidate(payload=payload, vector_score=score, vector_rank=rank)
@@ -201,13 +206,15 @@ class RagService:
 
         if not hybrid and cohere_order is not None:
             selected = [candidates[index] for index in cohere_order[: request.top_k]]
-            return selected, rerank_trace, None
+            return self._apply_entity_scope(request, candidates, selected), rerank_trace, None
 
         if not hybrid:
-            return candidates[: request.top_k], rerank_trace, None
+            selected = candidates[: request.top_k]
+            return self._apply_entity_scope(request, candidates, selected), rerank_trace, None
 
         vector_order = list(range(len(candidates)))
         documents = [candidate.payload.raw_text for candidate in candidates]
+        metadatas = [candidate.payload.metadata for candidate in candidates]
         lexical_order = bm25_rank_indices(request.question, documents)
         for lexical_rank, index in enumerate(lexical_order, start=1):
             candidates[index].lexical_rank = lexical_rank
@@ -229,16 +236,32 @@ class RagService:
             weights.append(2.0)
             tie_break = {index: rank for rank, index in enumerate(lexical_order, start=1)}
 
+        scope, entity_order = entity_rank_indices(
+            request.question,
+            metadatas,
+            explicit_company=request.company_name,
+            explicit_year=request.year,
+            explicit_quarter=request.quarter,
+        )
+        in_scope = filter_indices_to_scope(list(range(len(metadatas))), metadatas, scope)
+        if entity_order is not None and 0 < len(in_scope) < len(metadatas):
+            rankings.append(entity_order)
+            # Stronger than phrase boost: wrong-company SIE ledgers must lose.
+            weights.append(3.0)
+
         fused = reciprocal_rank_fusion(
             rankings,
             k=self._settings.rrf_k,
             weights=weights,
             tie_break_ranks=tie_break,
         )
+        fused_indices = [index for index, _ in fused]
+        fused_indices = filter_indices_to_scope(fused_indices, metadatas, scope)
+        rrf_by_index = {index: score for index, score in fused}
         selected: list[Candidate] = []
-        for index, rrf_score in fused[: request.top_k]:
+        for index in fused_indices[: request.top_k]:
             candidate = candidates[index]
-            candidate.rrf_score = rrf_score
+            candidate.rrf_score = rrf_by_index.get(index)
             selected.append(candidate)
 
         fusion_trace = FusionTrace(
@@ -249,6 +272,60 @@ class RagService:
             rrf_k=self._settings.rrf_k,
         )
         return selected, rerank_trace, fusion_trace
+
+    def _apply_entity_scope(
+        self,
+        request: QueryRequest,
+        pool: list[Candidate],
+        selected: list[Candidate],
+    ) -> list[Candidate]:
+        """Hard-drop off-entity chunks when the question names a company/period in the pool."""
+        metadatas = [candidate.payload.metadata for candidate in pool]
+        scope, entity_order = entity_rank_indices(
+            request.question,
+            metadatas,
+            explicit_company=request.company_name,
+            explicit_year=request.year,
+            explicit_quarter=request.quarter,
+        )
+        if entity_order is None:
+            return selected
+        id_to_candidate = {
+            candidate.payload.metadata.chunk_id: candidate for candidate in selected
+        }
+        pool_indices = {
+            candidate.payload.metadata.chunk_id: index
+            for index, candidate in enumerate(pool)
+        }
+        ordered = filter_indices_to_scope(
+            [pool_indices[chunk_id] for chunk_id in id_to_candidate],
+            metadatas,
+            scope,
+        )
+        # If filtering emptied the selection, refill from in-scope pool order.
+        if not ordered:
+            ordered = filter_indices_to_scope(entity_order, metadatas, scope)[
+                : request.top_k
+            ]
+            return [pool[index] for index in ordered]
+        kept = [
+            pool[index]
+            for index in ordered
+            if pool[index].payload.metadata.chunk_id in id_to_candidate
+        ]
+        if len(kept) >= min(request.top_k, len(selected)):
+            return kept[: request.top_k]
+        # Top up from in-scope pool so top_k stays filled with the right company.
+        kept_ids = {candidate.payload.metadata.chunk_id for candidate in kept}
+        for index in filter_indices_to_scope(entity_order, metadatas, scope):
+            candidate = pool[index]
+            if candidate.payload.metadata.chunk_id in kept_ids:
+                continue
+            kept.append(candidate)
+            kept_ids.add(candidate.payload.metadata.chunk_id)
+            if len(kept) >= request.top_k:
+                break
+        return kept
 
     def _build_trace(
         self,
@@ -265,6 +342,8 @@ class RagService:
     ) -> RetrievalTrace:
         hit_ids = {candidate.payload.metadata.chunk_id for candidate in selected}
         filters: dict[str, str | int] = {"tenant_id": request.tenant_id}
+        if request.company_name:
+            filters["company_name"] = request.company_name
         if request.doc_type:
             filters["doc_type"] = request.doc_type.value
         if request.category:

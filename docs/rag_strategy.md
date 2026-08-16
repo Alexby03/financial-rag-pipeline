@@ -20,9 +20,14 @@ chunk.
 
 ## 2. Filtered vector search
 
-Qdrant is queried with a `must` filter on `metadata.tenant_id`, plus any of `doc_type`,
-`category`, `year` and `quarter` supplied in the request. Tenant isolation is enforced here, at
-the database, not in application code after the fact.
+Qdrant is queried with a `must` filter on `metadata.tenant_id`, plus any of `company_name`,
+`doc_type`, `category`, `year` and `quarter` supplied in the request. Tenant isolation is
+enforced here, at the database, not in application code after the fact.
+
+When the question **names** a company (or Q3/year) that appears on candidate metadata,
+retrieval also builds an **entity RRF list** (weight 3) and then **hard-drops** out-of-scope
+chunks from `top_k`. Asking for Testföretaget AB must not surface Datakonsulterna AB just
+because both are SIE ledgers. Explicit sidebar filters still win as Qdrant `must` clauses.
 
 The number of candidates fetched is **not** `top_k`. When Cohere rerank **or** hybrid lexical
 fusion is active it is `top_k * RERANK_CANDIDATE_MULTIPLIER`, because both the reranker and

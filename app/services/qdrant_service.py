@@ -47,6 +47,7 @@ class QdrantService:
         category: str | None = None,
         year: int | None = None,
         quarter: int | None = None,
+        company_name: str | None = None,
     ) -> list[tuple[QdrantPayload, float]]:
         must: list[qmodels.FieldCondition] = [
             qmodels.FieldCondition(
@@ -54,6 +55,13 @@ class QdrantService:
                 match=qmodels.MatchValue(value=tenant_id),
             )
         ]
+        if company_name:
+            must.append(
+                qmodels.FieldCondition(
+                    key="metadata.company_name",
+                    match=qmodels.MatchValue(value=company_name),
+                )
+            )
         if doc_type:
             must.append(
                 qmodels.FieldCondition(

@@ -53,6 +53,7 @@ class ChatTurn(BaseModel):
 class QueryRequest(BaseModel):
     question: str
     tenant_id: str
+    company_name: str | None = None
     doc_type: DocType | None = None
     category: Category | None = None
     year: int | None = None

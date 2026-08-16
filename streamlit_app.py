@@ -313,6 +313,12 @@ with st.sidebar:
     tenant_id = st.text_input("Tenant ID", value=DEFAULT_TENANT_ID)
 
     st.subheader("Filters")
+    company_name = st.text_input(
+        "Company name",
+        value="",
+        placeholder="Optional exact metadata match",
+        help="Hard Qdrant filter. Leave empty to auto-scope from the question text.",
+    )
     doc_type = st.selectbox(
         "Document type", options=[None, *DocType], format_func=lambda x: "All" if x is None else x
     )
@@ -367,6 +373,7 @@ with chat_tab:
                         {
                             "question": question,
                             "tenant_id": tenant_id,
+                            "company_name": company_name.strip() or None,
                             "doc_type": doc_type.value if doc_type else None,
                             "category": category.value if category else None,
                             "year": int(year) if year else None,
