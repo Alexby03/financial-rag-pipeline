@@ -119,6 +119,8 @@ class RetrievalTrace(BaseModel):
     answer_model: str
     filters: dict[str, str | int] = Field(default_factory=dict)
     top_k: int
+    # Question actually embedded / BM25'd / reranked (prior user turns + current).
+    retrieval_question: str = ""
     hits: list[RetrievedChunkTrace] = Field(default_factory=list)
     neighbor_chunk_ids: list[str] = Field(default_factory=list)
     context_chunk_count: int = 0

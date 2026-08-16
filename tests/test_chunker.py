@@ -164,6 +164,88 @@ def test_column_periods_carry_across_page_break() -> None:
     assert "Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30" in equity[0].text
 
 
+def test_column_periods_do_not_stamp_later_prose_slides() -> None:
+    """Investor-deck cards must not inherit Kolumner from an earlier financial table."""
+    settings = Settings(openai_api_key="test-key")
+    chunker = Chunker(settings=settings)
+    pages = [
+        ParsedPage(
+            text="# Balansräkning\n\n| Not | 2025-06-30 | 2024-06-30 |\n| --- | ---: | ---: |",
+            page_number=3,
+        ),
+        ParsedPage(
+            text=(
+                "# Strategy to Lead Global AI Technology Company "
+                "Serving Both AI Builders + AI Adopters.\n\n"
+                "## Innovate\n\n"
+                "New Capabilities + Platforms. Expand addressable market."
+            ),
+            page_number=12,
+        ),
+        ParsedPage(
+            text=(
+                "## EGET KAPITAL OCH SKULDER\n\n"
+                "Aktiekapital\t100 000\t100 000\n"
+                "Summa bundet eget kapital\t100 000\t100 000\n"
+            ),
+            page_number=13,
+        ),
+    ]
+    chunks = chunker.split_pages(pages)
+    strategy = [chunk for chunk in chunks if "New Capabilities" in chunk.text]
+    equity = [chunk for chunk in chunks if "Aktiekapital" in chunk.text]
+
+    assert len(strategy) == 1
+    assert "Kolumner" not in strategy[0].text
+    assert "1934" not in strategy[0].text
+    assert strategy[0].text.startswith(
+        "Strategy to Lead Global AI Technology Company"
+    )
+    assert equity
+    assert "Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30" in (
+        equity[0].text
+    )
+
+
+def test_sec_act_years_are_not_column_periods() -> None:
+    """Page-2 FLS cites the Exchange Act of 1934 and Securities Act of 1933."""
+    settings = Settings(openai_api_key="test-key")
+    chunker = Chunker(settings=settings)
+    pages = [
+        ParsedPage(
+            text=(
+                "# Forward-Looking Statements\n\n"
+                "This presentation contains forward-looking statements within the meaning of "
+                "Section 21E of the Securities Exchange Act of 1934, as amended, and "
+                "Section 27A of the Securities Act of 1933, as amended. These forward-looking "
+                "statements are based on current expectations."
+            ),
+            page_number=2,
+        ),
+        ParsedPage(
+            text=(
+                "# Strategy to Lead Global AI Technology Company "
+                "Serving Both AI Builders + AI Adopters.\n\n"
+                "## Innovate\n\n"
+                "New Capabilities + Platforms. Expand addressable market."
+            ),
+            page_number=12,
+        ),
+    ]
+    chunks = chunker.split_pages(pages)
+    strategy = [chunk for chunk in chunks if "New Capabilities" in chunk.text]
+    disclaimer = [chunk for chunk in chunks if "forward-looking" in chunk.text.lower()]
+
+    assert disclaimer
+    assert "1934" in disclaimer[0].text
+    assert "1933" in disclaimer[0].text
+    assert "Kolumner" not in disclaimer[0].text
+    assert len(strategy) == 1
+    assert "Kolumner" not in strategy[0].text
+    assert "1934" not in strategy[0].text
+    assert "1933" not in strategy[0].text
+
+
 def test_qdrant_payload_roundtrip() -> None:
     metadata = ChunkMetadata(
         tenant_id="tenant_1",

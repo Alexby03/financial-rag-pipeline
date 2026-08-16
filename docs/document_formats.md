@@ -52,7 +52,12 @@ context). `openpyxl` reads cached values, splits each sheet on blank-row gaps (s
 and blank-column gaps (side-by-side parallel tables), and emits Markdown with year/period
 columns in the header row — the same breadcrumb pattern as Bolagsverket balance sheets
 (`Kolumner …` via the chunker, `Sheet > Table` headings). Note strips without their own year
-grid stay attached to the table on their left. Raw bytes stay in MinIO.
+grid stay attached to the table on their left. Raw bytes stay in MinIO. That `Kolumner`
+prefix is applied only to **table** chunks, and only for years 1990+. It is not SIE residue:
+SIE and Excel set `carry_page_context=False` so sheets cannot inherit each other's
+breadcrumbs. OCR PDFs do carry period headers across page breaks so a balance-sheet
+continuation still knows which date column is which — they must not be stamped onto
+later prose slides.
 
 ## OCR → Markdown
 

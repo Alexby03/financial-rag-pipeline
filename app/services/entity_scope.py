@@ -87,6 +87,22 @@ def parse_period_from_query(query: str) -> tuple[int | None, int | None]:
     return year, quarter
 
 
+def companies_mentioned_in_text(
+    text: str, candidate_metadata: list[ChunkMetadata]
+) -> list[str]:
+    """Indexed company names that appear in ``text``, first occurrence wins."""
+    seen: set[str] = set()
+    companies: list[str] = []
+    for meta in candidate_metadata:
+        key = normalize_company(meta.company_name)
+        if not key or key in seen:
+            continue
+        if company_mentioned_in_query(text, meta.company_name):
+            seen.add(key)
+            companies.append(meta.company_name)
+    return companies
+
+
 def resolve_entity_scope(
     question: str,
     candidate_metadata: list[ChunkMetadata],
@@ -94,20 +110,22 @@ def resolve_entity_scope(
     explicit_company: str | None = None,
     explicit_year: int | None = None,
     explicit_quarter: int | None = None,
+    history_text: str = "",
 ) -> EntityScope:
-    """Build scope from explicit filters, else from question ∩ candidate companies."""
+    """Build scope from explicit filters, else from question ∩ candidate companies.
+
+    Follow-ups often use pronouns ("de", "they") and omit the company. When the
+    current question names none, ``history_text`` (prior user turns) fills the
+    company list. Year/quarter still come only from the current question so a
+    Q4 thread does not hard-drop later "full year" questions.
+    """
     companies: list[str] = []
     if explicit_company and explicit_company.strip():
         companies.append(explicit_company.strip())
     else:
-        seen: set[str] = set()
-        for meta in candidate_metadata:
-            key = normalize_company(meta.company_name)
-            if not key or key in seen:
-                continue
-            if company_mentioned_in_query(question, meta.company_name):
-                seen.add(key)
-                companies.append(meta.company_name)
+        companies = companies_mentioned_in_text(question, candidate_metadata)
+        if not companies and history_text:
+            companies = companies_mentioned_in_text(history_text, candidate_metadata)
 
     year = explicit_year
     quarter = explicit_quarter
@@ -146,6 +164,7 @@ def entity_rank_indices(
     explicit_company: str | None = None,
     explicit_year: int | None = None,
     explicit_quarter: int | None = None,
+    history_text: str = "",
 ) -> tuple[EntityScope, list[int] | None]:
     """RRF list: in-scope first (best), out-of-scope last. ``None`` if nothing to scope."""
     scope = resolve_entity_scope(
@@ -154,6 +173,7 @@ def entity_rank_indices(
         explicit_company=explicit_company,
         explicit_year=explicit_year,
         explicit_quarter=explicit_quarter,
+        history_text=history_text,
     )
     if not scope.active:
         return scope, None

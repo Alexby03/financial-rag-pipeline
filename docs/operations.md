@@ -92,6 +92,30 @@ entirely correct and you still get this. Copy the deployment name verbatim from 
 It fails open by design. Check `trace.rerank` in the response, or the reasoning panel in the UI,
 which shows the fallback reason. Reranking is also inactive whenever `COHERE_API_BASE` or
 `COHERE_API_KEY` is blank, and that state is reported as "off" rather than as an error.
+When it *is* applied, `trace.fusion.method` is `cohere` and hits are ordered by
+`rerank_score`. A high Rerank column with INOD at the bottom of the table means you are
+looking at an older build that still fused Cohere rank equally with BM25.
+
+**A pitch-deck chunk shows `Kolumner … 1934 | 1933` that are not on the slide.**
+That prefix is the chunker's table-period breadcrumb, not another file leaking in. The
+years came from page 2 citing the Securities Exchange Act of 1934 and the Securities
+Act of 1933; an older build treated any two 19xx tokens as fiscal columns and stamped
+them onto every later page. Re-ingest after the chunker change: `Kolumner` is table-only,
+years before 1990 are ignored. See [ingestion_pipeline.md](ingestion_pipeline.md) §3.
+
+**A follow-up in the same chat retrieves the wrong company.**
+Retrieval used to embed only the current question, so "berätta om de är väl positionerade…"
+dropped INOD and ranked every growing-market deck by BM25/RRF. Prior user turns are now
+concatenated onto the question (`trace.retrieval_question`) and entity scope inherits the
+company from those turns. If the wrong issuer still wins, the first turn never named a
+company that matches `metadata.company_name`, or `chat_history` was not sent (Clear chat /
+tab reload). See [rag_strategy.md](rag_strategy.md) §1–3.
+
+**`top_k=5` becomes a single source after entity filtering.**
+Hard-drop removes other companies from the first mixed vector pool. An older build then
+handed whatever was left to the reasoner — often one INOD chunk. Retrieval now re-queries
+Qdrant with that `company_name` so the candidate window fills back up to `top_k`. If you
+still see one hit, that company only has one chunk in the index.
 
 **A presigned URL returns 403 on `HEAD`.**
 Presigned URLs are signed for a specific HTTP method. Use `GET`.

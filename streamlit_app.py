@@ -101,6 +101,8 @@ def render_trace(response: QueryResponse) -> None:
     with st.expander(label):
         st.markdown("**1. Qdrant search**")
         st.caption(f"Embedding model `{trace.embedding_model}`, top_k {trace.top_k}")
+        if trace.retrieval_question:
+            st.caption(f"Retrieval query: {trace.retrieval_question}")
         st.write({key: str(value) for key, value in trace.filters.items()})
 
         st.markdown("**2. Reranking and fusion**")
@@ -117,11 +119,17 @@ def render_trace(response: QueryResponse) -> None:
                 f"{trace.rerank.fallback_reason}"
             )
         if trace.fusion is not None and trace.fusion.lexical_applied:
-            lists = "Cohere + BM25" if trace.fusion.cohere_applied else "vector + BM25"
-            st.caption(
-                f"RRF fusion ({lists}, k={trace.fusion.rrf_k}) over "
-                f"{trace.fusion.candidates} candidates."
-            )
+            if trace.fusion.method == "cohere":
+                st.caption(
+                    "Final ranking is Cohere rerank order. BM25/RRF scores are shown "
+                    "for comparison and do not override the reranker."
+                )
+            else:
+                lists = "Cohere + BM25" if trace.fusion.cohere_applied else "vector + BM25"
+                st.caption(
+                    f"RRF fusion ({lists}, k={trace.fusion.rrf_k}) over "
+                    f"{trace.fusion.candidates} candidates."
+                )
 
         st.markdown("**3. Hits and similarity**")
         if trace.hits:

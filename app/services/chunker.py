@@ -13,6 +13,9 @@ _FENCE_PATTERN = re.compile(r"^```[a-zA-Z0-9_-]*\s*(.*?)\s*```$", re.DOTALL)
 # Balance-sheet / income-statement column periods (ISO dates or year labels).
 _ISO_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 _YEAR_LABEL = re.compile(r"(?i)\b(?:FY\s*)?((?:19|20)\d{2})([Ee])?\b")
+# SEC Acts of 1933/1934 in forward-looking-statements slides; BAS 1930s accounts.
+# Excel models in this repo start at 1991. Pre-1990 is not a fiscal column.
+_MIN_FISCAL_YEAR = 1990
 _AMOUNT_TOKEN = re.compile(
     r"^-?\d{1,3}(?:[ \u00a0]\d{3})*(?:[.,]\d+)?$|^-?\d+(?:[.,]\d+)?$"
 )
@@ -27,6 +30,8 @@ def period_labels_in_text(text: str) -> list[str]:
             labels.append(label)
     for match in _YEAR_LABEL.finditer(text):
         year, estimate = match.group(1), match.group(2)
+        if int(year) < _MIN_FISCAL_YEAR:
+            continue
         label = f"{year}{estimate.upper() if estimate else ''}"
         if label not in labels:
             labels.append(label)
@@ -107,18 +112,14 @@ class Chunker:
 
             level = self._heading_level(block)
             if level is not None:
-                chunks.extend(
-                    self._flush(pending, headings, page_number, column_periods)
-                )
+                chunks.extend(self._flush(pending, headings, page_number))
                 pending = []
                 headings = {lvl: text for lvl, text in headings.items() if lvl < level}
                 headings[level] = block.lstrip("#").strip()
                 continue
 
             if self._is_markdown_table(block) or self._is_tsv_financial_table(block):
-                chunks.extend(
-                    self._flush(pending, headings, page_number, column_periods)
-                )
+                chunks.extend(self._flush(pending, headings, page_number))
                 pending = []
                 chunks.append(
                     TextChunk(
@@ -130,7 +131,7 @@ class Chunker:
 
             pending.append(block)
 
-        chunks.extend(self._flush(pending, headings, page_number, column_periods))
+        chunks.extend(self._flush(pending, headings, page_number))
         return chunks, headings, column_periods
 
     def split_json(self, json_text: str, page_number: int = 1) -> list[TextChunk]:
@@ -186,13 +187,17 @@ class Chunker:
         pending: list[str],
         headings: dict[int, str],
         page_number: int,
-        column_periods: str | None,
     ) -> list[TextChunk]:
+        """Prose chunks keep heading breadcrumbs, not sticky Kolumner labels.
+
+        Column periods are for tables. Stamping them onto every later slide
+        (pitch-deck cards, disclaimers) invents years that are not on the page.
+        """
         if not pending:
             return []
         return [
             TextChunk(
-                text=self._with_context(chunk.text, headings, column_periods),
+                text=self._with_context(chunk.text, headings, None),
                 page_number=page_number,
             )
             for chunk in self._split_plain_text("\n\n".join(pending), page_number)
@@ -327,12 +332,24 @@ class Chunker:
 
     @staticmethod
     def _column_periods_from_block(block: str) -> str | None:
-        """Return '2025-06-30 | 2024-06-30' or '1991 | 1993E | …' from a block."""
+        """Return '2025-06-30 | 2024-06-30' or '1991 | 1993E | …' from a header line.
+
+        Narrative sentences ('2023 and 2024') must not become column periods for
+        later pages. Only table / tab / multi-space header rows count.
+        """
         for line in block.splitlines():
+            if not Chunker._is_period_header_line(line):
+                continue
             labels = period_labels_in_text(line)
             if len(labels) >= 2:
                 return " | ".join(labels)
         return None
+
+    @staticmethod
+    def _is_period_header_line(line: str) -> bool:
+        if len(period_labels_in_text(line)) < 2:
+            return False
+        return "\t" in line or "|" in line or bool(re.search(r"\s{2,}", line))
 
     @staticmethod
     def _split_markdown_blocks(markdown: str) -> list[str]:

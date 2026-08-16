@@ -19,7 +19,11 @@ from app.models.api import (
 from app.models.llm import FigureReading
 from app.models.metadata import QdrantPayload
 from app.services.embedder import Embedder
-from app.services.entity_scope import entity_rank_indices, filter_indices_to_scope
+from app.services.entity_scope import (
+    entity_rank_indices,
+    filter_indices_to_scope,
+    metadata_matches_scope,
+)
 from app.services.lexical import bm25_rank_indices, content_phrases, tokenize
 from app.services.minio_client import MinioStorage
 from app.services.openai_client import OpenAIService
@@ -32,6 +36,8 @@ logger = logging.getLogger(__name__)
 PREVIEW_LENGTH = 160
 MAX_FIGURE_READINGS = 4
 MAX_CHAT_HISTORY_TURNS = 20
+# Last N user turns concatenated onto the current question for embed / BM25 / rerank.
+MAX_RETRIEVAL_HISTORY_TURNS = 2
 
 
 @dataclass
@@ -64,9 +70,10 @@ OCR figure captions are retrieval hints. When "Authoritative figure readings" ar
 prefer them for plotted numbers. If a reading is approximate, keep that caveat.
 If — after reading every context chunk carefully — the answer is still not present, say so.
 Cite source filenames and page numbers when relevant.
-When the user names a company, year, or quarter, use only chunks for that entity. Never
-blend figures or account lists from another company or period that happen to appear in
-Context — say those other sources are out of scope instead of merging them."""
+When this conversation is about a named company, year, or quarter (including prior
+user turns), use only chunks for that entity. Never blend figures or account lists
+from another company or period that happen to appear in Context — say those other
+sources are out of scope instead of merging them."""
 
 
 
@@ -91,17 +98,27 @@ class RagService:
         retrieval_started = perf_counter()
         reranker = self._reranker if request.rerank else None
         hybrid = self._settings.hybrid_lexical
+        retrieval_question = _retrieval_question(request)
+        history_text = _user_history_text(request)
 
-        query_vector = self._embedder.embed_query(request.question)
+        query_vector = self._embedder.embed_query(retrieval_question)
+        limit = self._candidate_limit(request.top_k, reranker, hybrid)
         hits = self._qdrant.search(
             query_vector=query_vector,
             tenant_id=request.tenant_id,
-            limit=self._candidate_limit(request.top_k, reranker, hybrid),
+            limit=limit,
             doc_type=request.doc_type.value if request.doc_type else None,
             category=request.category.value if request.category else None,
             year=request.year,
             quarter=request.quarter,
             company_name=request.company_name,
+        )
+        hits = self._hits_for_entity_scope(
+            request,
+            query_vector,
+            hits,
+            history_text=history_text,
+            limit=limit,
         )
         candidates = [
             Candidate(payload=payload, vector_score=score, vector_rank=rank)
@@ -109,7 +126,12 @@ class RagService:
         ]
 
         selected, rerank_trace, fusion_trace = self._select_candidates(
-            request, candidates, reranker, hybrid
+            request,
+            candidates,
+            reranker,
+            hybrid,
+            retrieval_question=retrieval_question,
+            history_text=history_text,
         )
         context_payloads = self._resolve_context(
             [candidate.payload for candidate in selected], request.expand_neighbors
@@ -118,7 +140,7 @@ class RagService:
 
         vision_started = perf_counter()
         figure_readings = self._read_figures(
-            request.question,
+            retrieval_question,
             [candidate.payload for candidate in selected],
             context_payloads,
         )
@@ -148,6 +170,7 @@ class RagService:
         ]
         trace = self._build_trace(
             request=request,
+            retrieval_question=retrieval_question,
             selected=selected,
             context_payloads=context_payloads,
             retrieval_ms=retrieval_ms,
@@ -170,12 +193,76 @@ class RagService:
             return top_k
         return top_k * self._settings.rerank_candidate_multiplier
 
+    def _hits_for_entity_scope(
+        self,
+        request: QueryRequest,
+        query_vector: list[float],
+        hits: list[tuple[QdrantPayload, float]],
+        *,
+        history_text: str,
+        limit: int,
+    ) -> list[tuple[QdrantPayload, float]]:
+        """Re-query Qdrant for the inferred company so hard-drop does not shrink top_k.
+
+        The first search is mixed-tenant recall. If only one INOD chunk made that
+        pool, filtering to INOD would hand the reasoner a single source. A second
+        search with ``metadata.company_name`` fills the candidate window.
+        """
+        if request.company_name or not hits:
+            return hits
+        metadatas = [payload.metadata for payload, _ in hits]
+        scope, _ = entity_rank_indices(
+            request.question,
+            metadatas,
+            explicit_year=request.year,
+            explicit_quarter=request.quarter,
+            history_text=history_text,
+        )
+        if not scope.company_names:
+            return hits
+        in_scope = [
+            (payload, score)
+            for payload, score in hits
+            if metadata_matches_scope(payload.metadata, scope)
+        ]
+        if len(in_scope) >= limit:
+            return in_scope
+
+        filled: list[tuple[QdrantPayload, float]] = []
+        seen: set[str] = set()
+        for company in scope.company_names:
+            extra = self._qdrant.search(
+                query_vector=query_vector,
+                tenant_id=request.tenant_id,
+                limit=limit,
+                doc_type=request.doc_type.value if request.doc_type else None,
+                category=request.category.value if request.category else None,
+                year=request.year,
+                quarter=request.quarter,
+                company_name=company,
+            )
+            for payload, score in extra:
+                chunk_id = payload.metadata.chunk_id
+                if chunk_id in seen:
+                    continue
+                if not metadata_matches_scope(payload.metadata, scope):
+                    continue
+                seen.add(chunk_id)
+                filled.append((payload, score))
+        if len(filled) < len(in_scope):
+            return in_scope
+        filled.sort(key=lambda item: item[1], reverse=True)
+        return filled[:limit]
+
     def _select_candidates(
         self,
         request: QueryRequest,
         candidates: list[Candidate],
         reranker: CohereReranker | None,
         hybrid: bool,
+        *,
+        retrieval_question: str,
+        history_text: str,
     ) -> tuple[list[Candidate], RerankTrace | None, FusionTrace | None]:
         if not candidates:
             return [], None, None
@@ -185,9 +272,9 @@ class RagService:
 
         if reranker is not None:
             rerank_started = perf_counter()
-            # Ask Cohere for the full candidate pool so RRF can use its full ranking.
+            # Ask Cohere for the full candidate pool so we can take its top_k.
             outcome = reranker.rerank(
-                query=request.question,
+                query=retrieval_question,
                 documents=[candidate.payload.raw_text for candidate in candidates],
                 top_n=len(candidates),
             )
@@ -204,23 +291,27 @@ class RagService:
                     candidates[document.index].rerank_score = document.relevance_score
                     cohere_order.append(document.index)
 
-        if not hybrid and cohere_order is not None:
-            selected = [candidates[index] for index in cohere_order[: request.top_k]]
-            return self._apply_entity_scope(request, candidates, selected), rerank_trace, None
-
         if not hybrid:
-            selected = candidates[: request.top_k]
-            return self._apply_entity_scope(request, candidates, selected), rerank_trace, None
+            if cohere_order is not None:
+                selected = [candidates[index] for index in cohere_order[: request.top_k]]
+            else:
+                selected = candidates[: request.top_k]
+            return (
+                self._apply_entity_scope(request, candidates, selected, history_text),
+                rerank_trace,
+                None,
+            )
 
         vector_order = list(range(len(candidates)))
         documents = [candidate.payload.raw_text for candidate in candidates]
         metadatas = [candidate.payload.metadata for candidate in candidates]
-        lexical_order = bm25_rank_indices(request.question, documents)
+        lexical_order = bm25_rank_indices(retrieval_question, documents)
         for lexical_rank, index in enumerate(lexical_order, start=1):
             candidates[index].lexical_rank = lexical_rank
 
-        # Dense+sparse RRF is the industry default. When Cohere ran, use its order
-        # instead of raw vector order (cross-encoder already judged semantics).
+        # RRF is the recall fusion (vector or Cohere rank + BM25). When Cohere
+        # applied, it is recorded on hits but does not pick top_k — rank fusion
+        # collapses a 0.96 vs 0.65 gap into a small rank delta that BM25 vetoes.
         if cohere_order is not None:
             rankings = [cohere_order, lexical_order]
             tie_break = {index: rank for rank, index in enumerate(cohere_order, start=1)}
@@ -228,7 +319,7 @@ class RagService:
             rankings = [vector_order, lexical_order]
             tie_break = {index: rank for rank, index in enumerate(vector_order, start=1)}
 
-        phrase_order = _exact_phrase_ranking(request.question, documents, lexical_order)
+        phrase_order = _exact_phrase_ranking(retrieval_question, documents, lexical_order)
         weights = [1.0, 1.0]
         if phrase_order is not None:
             rankings.append(phrase_order)
@@ -242,6 +333,7 @@ class RagService:
             explicit_company=request.company_name,
             explicit_year=request.year,
             explicit_quarter=request.quarter,
+            history_text=history_text,
         )
         in_scope = filter_indices_to_scope(list(range(len(metadatas))), metadatas, scope)
         if entity_order is not None and 0 < len(in_scope) < len(metadatas):
@@ -255,17 +347,24 @@ class RagService:
             weights=weights,
             tie_break_ranks=tie_break,
         )
-        fused_indices = [index for index, _ in fused]
-        fused_indices = filter_indices_to_scope(fused_indices, metadatas, scope)
         rrf_by_index = {index: score for index, score in fused}
-        selected: list[Candidate] = []
-        for index in fused_indices[: request.top_k]:
-            candidate = candidates[index]
+        for index, candidate in enumerate(candidates):
             candidate.rrf_score = rrf_by_index.get(index)
-            selected.append(candidate)
+
+        if cohere_order is not None:
+            ordered_indices = cohere_order
+            method = "cohere"
+        else:
+            ordered_indices = [index for index, _ in fused]
+            method = "rrf"
+        ordered_indices = filter_indices_to_scope(ordered_indices, metadatas, scope)
+        selected = [candidates[index] for index in ordered_indices[: request.top_k]]
+        selected = self._apply_entity_scope(
+            request, candidates, selected, history_text
+        )
 
         fusion_trace = FusionTrace(
-            method="rrf",
+            method=method,
             lexical_applied=True,
             cohere_applied=cohere_order is not None,
             candidates=len(candidates),
@@ -278,6 +377,7 @@ class RagService:
         request: QueryRequest,
         pool: list[Candidate],
         selected: list[Candidate],
+        history_text: str,
     ) -> list[Candidate]:
         """Hard-drop off-entity chunks when the question names a company/period in the pool."""
         metadatas = [candidate.payload.metadata for candidate in pool]
@@ -287,6 +387,7 @@ class RagService:
             explicit_company=request.company_name,
             explicit_year=request.year,
             explicit_quarter=request.quarter,
+            history_text=history_text,
         )
         if entity_order is None:
             return selected
@@ -313,7 +414,7 @@ class RagService:
             for index in ordered
             if pool[index].payload.metadata.chunk_id in id_to_candidate
         ]
-        if len(kept) >= min(request.top_k, len(selected)):
+        if len(kept) >= request.top_k:
             return kept[: request.top_k]
         # Top up from in-scope pool so top_k stays filled with the right company.
         kept_ids = {candidate.payload.metadata.chunk_id for candidate in kept}
@@ -330,6 +431,7 @@ class RagService:
     def _build_trace(
         self,
         request: QueryRequest,
+        retrieval_question: str,
         selected: list[Candidate],
         context_payloads: list[QdrantPayload],
         retrieval_ms: int,
@@ -358,6 +460,7 @@ class RagService:
             answer_model=self._settings.openai_answer_model,
             filters=filters,
             top_k=request.top_k,
+            retrieval_question=retrieval_question,
             hits=[
                 RetrievedChunkTrace(
                     chunk_id=candidate.payload.metadata.chunk_id,
@@ -594,6 +697,33 @@ class RagService:
                 lines.extend(["", "Vision reading:", reading.reading])
             sections.append("\n".join(lines))
         return "\n\n---\n\n".join(sections)
+
+
+def _user_history_text(request: QueryRequest) -> str:
+    """All prior user turns — company names for entity scope on pronoun follow-ups."""
+    return " ".join(
+        turn.content.strip()
+        for turn in request.chat_history
+        if turn.role == "user" and turn.content.strip()
+    )
+
+
+def _retrieval_question(request: QueryRequest) -> str:
+    """Question used for embed / BM25 / rerank.
+
+    Follow-ups omit the entity ("de", "they"). Prior user turns carry it.
+    Last two user turns plus the current question is enough signal without
+    turning a long thread into a novel.
+    """
+    prior = [
+        turn.content.strip()
+        for turn in request.chat_history
+        if turn.role == "user" and turn.content.strip()
+    ][-MAX_RETRIEVAL_HISTORY_TURNS:]
+    current = request.question.strip()
+    if not prior:
+        return current
+    return " ".join([*prior, current])
 
 
 def _exact_phrase_ranking(

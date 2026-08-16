@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.config import Settings
-from app.models.api import QueryRequest
+from app.models.api import ChatTurn, QueryRequest
 from app.models.enums import Category, DocType
 from app.models.llm import ReasonedAnswer
 from app.models.metadata import ChunkMetadata, QdrantPayload
@@ -28,17 +28,23 @@ NO_HYBRID_SETTINGS = Settings(
 )
 
 
-def build_payload(chunk_id: str, text: str) -> QdrantPayload:
+def build_payload(
+    chunk_id: str,
+    text: str,
+    *,
+    company_name: str = "SME Corp AB",
+    source_filename: str = "report.pdf",
+) -> QdrantPayload:
     return QdrantPayload(
         raw_text=text,
         metadata=ChunkMetadata(
             tenant_id="tenant_1",
-            company_name="SME Corp AB",
+            company_name=company_name,
             doc_type=DocType.FINANCIAL_REPORT,
             category=Category.FINANCING,
             year=2024,
             quarter=3,
-            source_filename="report.pdf",
+            source_filename=source_filename,
             object_key="tenant_1/doc-1/report.pdf",
             page_number=1,
             chunk_id=chunk_id,
@@ -79,6 +85,7 @@ class FakeReranker:
         self._outcome = outcome
         self.calls = 0
         self.last_top_n: int | None = None
+        self.last_query = ""
 
     @property
     def model(self) -> str:
@@ -87,6 +94,7 @@ class FakeReranker:
     def rerank(self, query: str, documents: list[str], top_n: int) -> RerankOutcome:
         self.calls += 1
         self.last_top_n = top_n
+        self.last_query = query
         return self._outcome
 
 
@@ -231,6 +239,7 @@ def test_rerank_reorders_sources_and_widens_candidate_pool() -> None:
     assert response.trace.rerank.applied
     assert response.trace.fusion is not None
     assert response.trace.fusion.cohere_applied
+    assert response.trace.fusion.method == "cohere"
     assert response.trace.hits[0].vector_rank == 2
 
 
@@ -266,3 +275,87 @@ def test_hybrid_can_be_disabled() -> None:
     assert qdrant.requested_limit == 2
     assert response.trace.fusion is None
     assert [source.metadata.chunk_id for source in response.sources] == ["c1", "c2"]
+
+
+def test_cohere_order_beats_bm25_when_rerank_applied() -> None:
+    """Generic 'growing market' copy can win BM25/RRF while Cohere scores INOD 0.96."""
+    hits = [
+        (
+            build_payload(
+                "generic",
+                "De är väl positionerade i den växande marknaden. Strategy growth TAM.",
+                company_name="Other Co AB",
+                source_filename="q3_report_2024.pdf",
+            ),
+            0.91,
+        ),
+        (
+            build_payload(
+                "inod",
+                "INOD Q4: AI builders and adopters, optimize positioning.",
+                company_name="INOD AB",
+                source_filename="inod_q4_investor_presentation.pdf",
+            ),
+            0.40,
+        ),
+        (
+            build_payload(
+                "other",
+                "Unrelated notes without market language.",
+                company_name="Other Co AB",
+                source_filename="q3_report_2024.pdf",
+            ),
+            0.35,
+        ),
+    ]
+    outcome = RerankOutcome(
+        applied=True,
+        documents=[
+            RerankedDocument(index=1, relevance_score=0.96),
+            RerankedDocument(index=0, relevance_score=0.62),
+            RerankedDocument(index=2, relevance_score=0.10),
+        ],
+    )
+    reranker = FakeReranker(outcome)
+    response = build_service(reranker, FakeQdrant(hits)).query(
+        QueryRequest(
+            question="berätta om de är väl positionerade i den växande marknaden",
+            tenant_id="tenant_1",
+            top_k=2,
+            rerank=True,
+        )
+    )
+
+    assert [source.metadata.chunk_id for source in response.sources] == ["inod", "generic"]
+    assert response.sources[0].rerank_score == 0.96
+    assert response.trace.fusion is not None
+    assert response.trace.fusion.method == "cohere"
+    assert response.trace.hits[0].lexical_rank is not None
+    assert response.trace.hits[0].lexical_rank > 1
+
+
+def test_rerank_query_includes_prior_user_turn() -> None:
+    outcome = RerankOutcome(
+        applied=True,
+        documents=[
+            RerankedDocument(index=0, relevance_score=0.9),
+            RerankedDocument(index=1, relevance_score=0.2),
+            RerankedDocument(index=2, relevance_score=0.1),
+        ],
+    )
+    reranker = FakeReranker(outcome)
+    build_service(reranker, FakeQdrant()).query(
+        QueryRequest(
+            question="berätta om de är väl positionerade",
+            tenant_id="tenant_1",
+            top_k=2,
+            rerank=True,
+            chat_history=[
+                ChatTurn(role="user", content="main takeaways av inods Q4 presentation"),
+                ChatTurn(role="assistant", content="De växte."),
+            ],
+        )
+    )
+    assert "inods Q4" in reranker.last_query
+    assert "väl positionerade" in reranker.last_query
+

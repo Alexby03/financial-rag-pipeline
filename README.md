@@ -50,11 +50,12 @@ Chat UI: http://localhost:8501
 Vector search alone ranks by embedding similarity, which buries chunks whose wording differs
 from the question. When configured, the query path retrieves
 `top_k * RERANK_CANDIDATE_MULTIPLIER` candidates from Qdrant, sends them to Cohere Rerank, and
-keeps the `top_k` best.
+keeps the `top_k` best by Cohere order (BM25/RRF scores stay on the trace but do not override
+the reranker).
 
 Reranking is off until both `COHERE_API_BASE` and `COHERE_API_KEY` are set, so the app runs
 unchanged without a deployment. When the endpoint is unreachable, unauthorized, or returns an
-unexpected payload, the query falls back to the vector order and the reason is reported in the
+unexpected payload, the query falls back to vector+BM25 fusion and the reason is reported in the
 retrieval trace instead of failing the request.
 
 `COHERE_API_BASE` accepts any of the shapes Foundry hands out, with or without the trailing
@@ -80,8 +81,10 @@ For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exact
   in through the double-linked list, any figure vision readings, and the reasoning summary from
   the answer model.
 - **Session chat**: turns stay in the Streamlit tab (`st.session_state`) and are sent as
-  `chat_history` on the next `/query`. Refreshing the tab or clicking Clear chat starts over;
-  nothing is persisted on the server.
+  `chat_history` on the next `/query`. Retrieval concatenates recent user turns onto the
+  current question so a follow-up like "are they well positioned?" still finds INOD
+  rather than every growing-market deck in the tenant. Refreshing the tab or clicking
+  Clear chat starts over; nothing is persisted on the server.
 - **Clickable sources**: each source resolves through `/sources/url` to a presigned MinIO URL
   for the original file. PDFs open inline on the cited page, spreadsheets and other formats
   download. Figure chunks also open the parent PDF, not the stored crop. The bytes go straight
