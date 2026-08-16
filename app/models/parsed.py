@@ -29,3 +29,6 @@ class ParsedContent:
     content_format: Literal["markdown", "json"] = "markdown"
     figures: list[ParsedFigure] = field(default_factory=list)
     annotation: OcrDocumentAnnotation | None = None
+    # OCR multi-page statements need sticky headings/years across pages. Excel sheets
+    # and SIE sections must not inherit those — each page starts clean.
+    carry_page_context: bool = True

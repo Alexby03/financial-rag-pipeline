@@ -55,6 +55,7 @@ def parse_sie_bytes(file_bytes: bytes) -> ParsedContent:
             pages=pages,
             content_format="markdown",
             annotation=_annotation_from_sie(llm_data),
+            carry_page_context=False,
         )
     finally:
         Path(temp_path).unlink(missing_ok=True)

@@ -57,6 +57,7 @@ document.
 |-------|----------|--------|
 | PDF | Mistral OCR 4, split into 30-page slices (Foundry cap) | Markdown pages + figures |
 | DOCX, PPTX, images | Mistral OCR 4 (`/ocr`, one call) | Markdown pages + figures |
+| Excel (`.xlsx`, `.xlsm`) | openpyxl → Markdown tables (no OCR) | One Markdown page per sheet |
 | Plain text / Markdown | Verbatim decode | Single Markdown page |
 | SIE (`.sie`, `.si`, `.se`) | Lean vendored SIE 4 parser → LLM summaries (no OCR) | Markdown summary pages |
 | XHTML / HTML | Headless Edge/Chrome print → PDF → OCR (30-page slices) | Markdown pages + figures |
@@ -77,6 +78,14 @@ Qdrant — not every voucher line. `doc_type` is set to `accounting_data` and `c
 defaults to `financing` (they are separate filters — accounting_data is not a category).
 Company name and year are filled from `#FNAMN` / `#RAR` when the upload form leaves them
 blank.
+
+**Excel workbooks.** `.xlsx` / `.xlsm` bypass OCR (Foundry's Office path can explode a small
+grid past the 128k context). `openpyxl` reads cached values, splits each sheet on blank-row
+gaps (stacked tables) and blank-column gaps (side-by-side parallel tables), and emits
+Markdown with year/period columns in the header row — the same breadcrumb pattern as
+Bolagsverket balance sheets (`Kolumner …` via the chunker, `Sheet > Table` headings).
+Note strips without their own year grid stay attached to the table on their left. Raw bytes
+stay in MinIO.
 
 **OCR → Markdown.** Each `pages[].markdown` becomes a `ParsedPage`. Page identity comes from
 `pages[].index`, normalized to 1-based `page_number`. Empty pages are dropped and **not**
@@ -121,9 +130,10 @@ retrieve.
 - **Tab-separated financial rows are treated like tables.** OCR often emits
   `Aktiekapital\t100 000\t100 000` instead of pipe tables; those rows stay together.
 - **Period column headers stick to later rows.** When a page (or an earlier page) shows
-  `2025-06-30` and `2024-06-30` as balance-sheet columns, later equity/liability chunks on
-  that statement get `Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30`
-  in the prefix (and the same dates injected into markdown table headers when possible) so retrieval does not
+  `2025-06-30` and `2024-06-30` as balance-sheet columns — or year labels like `1991` /
+  `2004E` from Excel models — later table chunks get
+  `Kolumner (vänster→höger efter radetikett): …` in the prefix (and the same labels injected
+  into markdown table headers when missing) so retrieval does not
   lose which year an amount belongs to.
 - **Paragraphs under the same heading are merged** until `chunk_size` is reached, so chunks are
   meaningful units instead of single sentences. Oversized blocks fall back to character

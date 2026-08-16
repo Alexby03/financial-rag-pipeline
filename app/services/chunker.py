@@ -10,11 +10,27 @@ from app.models.metadata import ChunkMetadata, QdrantPayload
 from app.models.parsed import ParsedPage
 
 _FENCE_PATTERN = re.compile(r"^```[a-zA-Z0-9_-]*\s*(.*?)\s*```$", re.DOTALL)
-# Balance-sheet / income-statement column dates from Bolagsverket-style reports.
+# Balance-sheet / income-statement column periods (ISO dates or year labels).
 _ISO_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+_YEAR_LABEL = re.compile(r"(?i)\b(?:FY\s*)?((?:19|20)\d{2})([Ee])?\b")
 _AMOUNT_TOKEN = re.compile(
     r"^-?\d{1,3}(?:[ \u00a0]\d{3})*(?:[.,]\d+)?$|^-?\d+(?:[.,]\d+)?$"
 )
+
+
+def period_labels_in_text(text: str) -> list[str]:
+    """Ordered period tokens from a line (ISO dates and/or year labels like 2004E)."""
+    labels: list[str] = []
+    for match in _ISO_DATE.finditer(text):
+        label = match.group(1)
+        if label not in labels:
+            labels.append(label)
+    for match in _YEAR_LABEL.finditer(text):
+        year, estimate = match.group(1), match.group(2)
+        label = f"{year}{estimate.upper() if estimate else ''}"
+        if label not in labels:
+            labels.append(label)
+    return labels
 
 
 def strip_code_fence(text: str) -> str:
@@ -36,12 +52,25 @@ class Chunker:
         self._chunk_size = settings.chunk_size
         self._chunk_overlap = settings.chunk_overlap
 
-    def split_pages(self, pages: list[ParsedPage]) -> list[TextChunk]:
-        """Chunk a document page by page, carrying headings across page breaks."""
+    def split_pages(
+        self,
+        pages: list[ParsedPage],
+        *,
+        carry_context: bool = True,
+    ) -> list[TextChunk]:
+        """Chunk a document page by page.
+
+        When ``carry_context`` is True (PDF/OCR), headings and column periods continue
+        across page breaks. When False (Excel sheets, SIE), each page starts clean so
+        sheet N cannot inherit ``Financials > …`` breadcrumbs from sheet N-1.
+        """
         chunks: list[TextChunk] = []
         headings: dict[int, str] = {}
         column_periods: str | None = None
         for page in pages:
+            if not carry_context:
+                headings = {}
+                column_periods = None
             page_chunks, headings, column_periods = self._split_page(
                 page.text,
                 page.page_number,
@@ -218,7 +247,7 @@ class Chunker:
         while end + 1 < len(lines) and "|" in lines[end + 1]:
             end += 1
         table_lines = lines[start : end + 1]
-        if any(len(_ISO_DATE.findall(line)) >= 2 for line in table_lines[:2]):
+        if any(len(period_labels_in_text(line)) >= 2 for line in table_lines[:2]):
             return text
 
         data_rows = [
@@ -298,15 +327,11 @@ class Chunker:
 
     @staticmethod
     def _column_periods_from_block(block: str) -> str | None:
-        """Return '2025-06-30 | 2024-06-30' when a block exposes period columns."""
+        """Return '2025-06-30 | 2024-06-30' or '1991 | 1993E | …' from a block."""
         for line in block.splitlines():
-            dates = _ISO_DATE.findall(line)
-            if len(dates) >= 2:
-                ordered: list[str] = []
-                for date in dates:
-                    if date not in ordered:
-                        ordered.append(date)
-                return " | ".join(ordered)
+            labels = period_labels_in_text(line)
+            if len(labels) >= 2:
+                return " | ".join(labels)
         return None
 
     @staticmethod

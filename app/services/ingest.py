@@ -83,7 +83,10 @@ class IngestService:
                     for chunk in self._chunker.split_json(page.text, page.page_number)
                 ]
             else:
-                text_chunks = self._chunker.split_pages(parsed.pages)
+                text_chunks = self._chunker.split_pages(
+                    parsed.pages,
+                    carry_context=parsed.carry_page_context,
+                )
 
             figure_chunks: list[TextChunk] = []
             for figure in parsed.figures:
@@ -163,7 +166,7 @@ def merge_ingest_metadata(
         raise IngestMetadataError(
             "Could not determine "
             + ", ".join(missing)
-            + ". Fill them on upload, or use a document OCR can read (SIE fills company/year)."
+            + ". Fill them on upload, or use a document OCR can read."
         )
 
     assert company_name is not None
