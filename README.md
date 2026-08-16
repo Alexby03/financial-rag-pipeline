@@ -149,5 +149,6 @@ and all HTTP is mocked, including the Streamlit test that renders the app end to
 
 See [docs/architecture.md](docs/architecture.md) for the stack,
 [docs/ingestion_pipeline.md](docs/ingestion_pipeline.md) for how documents become searchable,
+[docs/document_formats.md](docs/document_formats.md) for how each file type becomes Markdown,
 [docs/rag_strategy.md](docs/rag_strategy.md) for how they are retrieved, and
 [docs/operations.md](docs/operations.md) for known failure modes and limitations.

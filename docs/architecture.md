@@ -57,5 +57,6 @@ known gaps.
 ## Documentation
 
 - [ingestion_pipeline.md](ingestion_pipeline.md) — how documents become searchable
+- [document_formats.md](document_formats.md) — how each file type becomes Markdown
 - [rag_strategy.md](rag_strategy.md) — how they are retrieved and answered
 - [operations.md](operations.md) — failure modes, limitations and risks

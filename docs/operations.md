@@ -2,6 +2,8 @@
 
 What breaks, why, and what this MVP does not do yet. The pipelines themselves are described in
 [ingestion_pipeline.md](ingestion_pipeline.md) and [rag_strategy.md](rag_strategy.md).
+Parse-specific behaviour (SIE, XHTML, Excel, OCR) is in
+[document_formats.md](document_formats.md).
 
 ## Known failure modes
 
