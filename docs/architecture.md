@@ -41,9 +41,9 @@ Two properties are worth noting in that picture. File bytes never travel back th
 the API hands the browser a short-lived presigned URL and MinIO serves the file directly.
 And every external dependency except Qdrant, OpenAI, and Mistral OCR is optional — the system
 runs with reranking switched off. Plain `.txt` / `.md` ingest does not need OCR. Swedish SIE
-accounting files (`.sie` / `.si` / `.se`) are parsed locally into Markdown summaries; the raw
-file still lands in MinIO. XHTML annual reports need a local Chrome/Edge binary for
-print-to-PDF before OCR.
+accounting files (`.sie` / `.si` / `.se`) and Excel workbooks (`.xlsx` / `.xlsm`) are parsed
+locally into Markdown; the raw file still lands in MinIO. XHTML annual reports need a local
+Chrome/Edge binary for print-to-PDF before OCR.
 
 ## Multi-tenancy
 

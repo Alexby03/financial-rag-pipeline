@@ -1,6 +1,6 @@
 """Document parsing via Mistral OCR 4 → Markdown pages + figures.
 
-SIE / SI / SE accounting files bypass OCR and produce Markdown summaries.
+SIE / SI / SE accounting files and Excel workbooks bypass OCR and produce Markdown.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from app.services.heading_normalizer import normalize_page_markdown
 from app.services.mistral_ocr import MistralOcrClient, OcrPage, OcrResult
 from app.services.sie import is_sie_filename, parse_sie_bytes
 from app.services.xhtml_pdf import is_xhtml_filename, xhtml_to_pdf
+from app.services.xlsx import is_xlsx_filename, parse_xlsx_bytes
 
 # OCR embeds figures as relative markdown images that are not MinIO objects.
 _IMAGE_PLACEHOLDER = re.compile(r"!\[[^\]]*\]\(img-\d+[^)]*\)", re.IGNORECASE)
@@ -34,6 +35,8 @@ class DocumentParser:
         mime = mime_type or "application/octet-stream"
         if is_sie_filename(filename):
             return parse_sie_bytes(file_bytes)
+        if is_xlsx_filename(filename):
+            return parse_xlsx_bytes(file_bytes)
         if is_xhtml_filename(filename):
             # Bolagsverket XHTML → multi-page PDF → existing 30-page OCR slices.
             pdf_bytes = xhtml_to_pdf(file_bytes, filename)

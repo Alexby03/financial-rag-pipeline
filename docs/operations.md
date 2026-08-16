@@ -30,6 +30,11 @@ call (`MISTRAL_OCR_MAX_PAGES`). If this reappears, the file is not a PDF we coul
 (Office/PPTX), or slicing failed and the whole file was sent. A failed job deletes the MinIO
 object it uploaded; leftovers from before that rollback have to be removed in the console.
 
+**OCR answers 400 with a huge token count on a small `.xlsx`.**
+Spreadsheets are not sent to Mistral — they are parsed locally with openpyxl. If you still
+see this error, the API process is on an older build; restart after pulling. DOCX/PPTX still
+use OCR and can hit the same limit on very large Office packages.
+
 **Ingest job fails with `Could not determine company_name, ...`.**
 OCR `document_annotation` did not fill the blanks and the upload form left them empty. Fill
 them on upload, or re-try with a document that has a readable title page. Do not expect `.txt`
