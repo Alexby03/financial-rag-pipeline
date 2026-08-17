@@ -10,7 +10,7 @@ from app.api.routes import ingest as ingest_routes
 from app.models.api import IngestMetadata, IngestMetadataPatch, IngestResponse
 from app.models.enums import Category, DocType, Language
 from app.services.ingest import IngestMetadataError
-from app.services.ingest_jobs import IngestJobManager, InMemoryJobQueue
+from app.services.ingest_jobs import IngestJobManager, InMemoryJobQueue, RedisJobQueue
 
 
 class FakeIngestService:
@@ -71,6 +71,27 @@ def _metadata_complete(metadata: IngestMetadata) -> bool:
 @pytest.fixture
 def job_manager() -> IngestJobManager:
     return IngestJobManager(_queue=InMemoryJobQueue())
+
+
+def test_redis_job_queue_falls_back_to_in_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "redis" or name.startswith("redis."):
+            raise ModuleNotFoundError("No module named 'redis'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    async def run() -> None:
+        queue = RedisJobQueue("redis://localhost:6379/0")
+        await queue.push("job-123")
+        assert await queue.pop() == "job-123"
+        await queue.close()
+
+    asyncio.run(run())
 
 
 def test_worker_reports_completed_status(job_manager: IngestJobManager) -> None:

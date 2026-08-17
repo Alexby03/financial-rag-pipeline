@@ -54,15 +54,30 @@ class InMemoryJobQueue:
 
 class RedisJobQueue:
     def __init__(self, redis_url: str, key: str = "ingest:jobs") -> None:
-        import redis.asyncio as redis_async
+        try:
+            import redis.asyncio as redis_async
+        except ModuleNotFoundError:
+            logger.warning(
+                "Redis package is not installed; using in-memory queue fallback for ingest jobs."
+            )
+            self._fallback = InMemoryJobQueue()
+            self._redis = None
+            self._key = key
+            return
 
         self._redis = redis_async.from_url(redis_url, decode_responses=True)
         self._key = key
+        self._fallback = None
 
     async def push(self, job_id: str) -> None:
+        if self._redis is None:
+            await self._fallback.push(job_id)
+            return
         await self._redis.rpush(self._key, job_id)
 
     async def pop(self) -> str:
+        if self._redis is None:
+            return await self._fallback.pop()
         # timeout=0 blocks until an item is available.
         result = await self._redis.blpop(self._key, timeout=0)
         if result is None:
@@ -71,7 +86,10 @@ class RedisJobQueue:
         return job_id
 
     async def close(self) -> None:
-        await self._redis.aclose()
+        if self._redis is not None:
+            await self._redis.aclose()
+        elif self._fallback is not None:
+            await self._fallback.close()
 
 
 @dataclass

@@ -9,8 +9,8 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Root = $PSScriptRoot
-Set-Location $Root
+$Root = (Resolve-Path -LiteralPath $PSScriptRoot).Path
+Set-Location -LiteralPath $Root
 
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
 $ApiUrl = "http://127.0.0.1:8000"
@@ -81,15 +81,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $Root ".env"))) {
     throw "Missing .env. Copy .env.example and set OPENAI_API_KEY plus MISTRAL_OCR_ENDPOINT / MISTRAL_OCR_API_KEY."
 }
 
-Write-Step "Starting Docker Compose (qdrant, minio, minio-init)"
-& docker compose up -d qdrant minio minio-init
+Write-Step "Starting Docker Compose (qdrant, minio, minio-init, redis)"
+& docker compose up -d qdrant minio minio-init redis
 if ($LASTEXITCODE -ne 0) {
     throw "docker compose up failed (exit $LASTEXITCODE)."
 }
 
-Write-Step "Waiting for Qdrant and MinIO"
+Write-Step "Waiting for Qdrant, MinIO, and Redis"
 Wait-UrlOk -Url "http://127.0.0.1:6333/readyz" -Name "Qdrant" -TimeoutSec 90
 Wait-UrlOk -Url "http://127.0.0.1:9000/minio/health/live" -Name "MinIO" -TimeoutSec 90
+while (-not (Test-PortOpen 6379)) {
+    Start-Sleep -Milliseconds 400
+}
 
 Write-Step "Ensuring Qdrant collection exists"
 & $Python -m app.scripts.init_qdrant
