@@ -1,10 +1,17 @@
 import uuid
+from collections.abc import Sequence
+from typing import TypeVar
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from app.config import Settings
 from app.models.metadata import QdrantPayload
+
+# Qdrant HTTP rejects bodies over 32 MiB. 1536-d vectors in JSON are bulky, so keep batches small.
+QDRANT_UPSERT_MAX_POINTS = 64
+
+T = TypeVar("T")
 
 
 class QdrantService:
@@ -35,7 +42,8 @@ class QdrantService:
             )
             for vector, payload in zip(vectors, validated_payloads, strict=True)
         ]
-        self._client.upsert(collection_name=self._collection, points=points)
+        for batch in _batched(points, QDRANT_UPSERT_MAX_POINTS):
+            self._client.upsert(collection_name=self._collection, points=batch)
         return len(points)
 
     def search(
@@ -186,3 +194,9 @@ class QdrantService:
     @staticmethod
     def new_point_id() -> str:
         return str(uuid.uuid4())
+
+
+def _batched(items: Sequence[T], size: int) -> list[list[T]]:
+    if size < 1:
+        raise ValueError("batch size must be >= 1")
+    return [list(items[i : i + size]) for i in range(0, len(items), size)]

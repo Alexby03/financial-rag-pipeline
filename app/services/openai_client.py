@@ -21,6 +21,38 @@ Rules for charts:
 
 Reply in the same language as the question. Lead with the answer value, then the brief method."""
 
+# OpenAI embeddings.create caps: 2048 inputs and ~300k tokens per request.
+EMBEDDING_MAX_BATCH = 512
+# ~4 chars/token → stay well under 300k tokens with margin for non-English text.
+EMBEDDING_MAX_CHARS = 600_000
+
+
+def embedding_batches(
+    texts: list[str],
+    *,
+    max_batch: int = EMBEDDING_MAX_BATCH,
+    max_chars: int = EMBEDDING_MAX_CHARS,
+) -> list[list[str]]:
+    """Split texts so each OpenAI embeddings request stays under API limits."""
+    if not texts:
+        return []
+    batches: list[list[str]] = []
+    current: list[str] = []
+    chars = 0
+    for text in texts:
+        text_chars = len(text)
+        if current and (
+            len(current) >= max_batch or chars + text_chars > max_chars
+        ):
+            batches.append(current)
+            current = []
+            chars = 0
+        current.append(text)
+        chars += text_chars
+    if current:
+        batches.append(current)
+    return batches
+
 
 def image_media_type(image_bytes: bytes) -> str:
     if image_bytes.startswith(b"\x89PNG"):
@@ -42,11 +74,15 @@ class OpenAIService:
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = self._client.embeddings.create(
-            model=self._settings.openai_embedding_model,
-            input=texts,
-        )
-        return [item.embedding for item in response.data]
+        vectors: list[list[float]] = []
+        for batch in embedding_batches(texts):
+            response = self._client.embeddings.create(
+                model=self._settings.openai_embedding_model,
+                input=batch,
+            )
+            ordered = sorted(response.data, key=lambda item: item.index)
+            vectors.extend(item.embedding for item in ordered)
+        return vectors
 
     def embed_text(self, text: str) -> list[float]:
         return self.embed_texts([text])[0]
