@@ -19,7 +19,6 @@ DEFAULT_API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
 DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "default_tenant_test_corp_123")
 REQUEST_TIMEOUT = 120.0
 INGEST_POLL_INTERVAL_SECONDS = 1.5
-INGEST_POLL_TIMEOUT_SECONDS = 1800.0
 
 STAGE_LABELS = {
     "checking": "Checking for duplicates...",
@@ -274,45 +273,102 @@ def fetch_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
     return IngestJobStatusResponse.model_validate(response.json())
 
 
+TERMINAL_INGEST_STATUSES = frozenset({"completed", "failed", "duplicate"})
+ACTIVE_INGEST_STATUSES = frozenset({"queued", "running", "needs_metadata"})
+
+
 def toast_ingest_progress(job: IngestJobStatusResponse) -> None:
+    name = job.filename or job.job_id
     if job.status == "queued":
-        st.toast("Upload queued...", icon=":material/progress_activity:", duration="infinite")
+        st.toast(
+            f"{name}: queued...",
+            icon=":material/progress_activity:",
+            duration="infinite",
+        )
         return
     if job.status == "running":
         label = STAGE_LABELS.get(job.stage or "", "Processing the document...")
-        st.toast(label, icon=":material/progress_activity:", duration="infinite")
+        st.toast(
+            f"{name}: {label}",
+            icon=":material/progress_activity:",
+            duration="infinite",
+        )
+        return
+    if job.status == "needs_metadata":
+        missing = ", ".join(job.missing_fields) or "metadata"
+        st.toast(
+            f"{name}: needs {missing}",
+            icon=":material/edit:",
+            duration="infinite",
+        )
         return
     if job.status == "completed":
-        st.toast("Document uploaded", icon=":material/check_circle:", duration="infinite")
+        st.toast(
+            f"{name}: uploaded",
+            icon=":material/check_circle:",
+            duration="infinite",
+        )
         return
     if job.status == "duplicate":
-        st.toast("Document was already indexed", icon=":material/info:", duration="infinite")
+        st.toast(
+            f"{name}: already indexed",
+            icon=":material/info:",
+            duration="infinite",
+        )
         return
     st.toast(
-        f"Upload failed: {job.error or 'unknown error'}",
+        f"{name}: {job.error or 'unknown error'}",
         icon=":material/error:",
         duration="infinite",
     )
 
 
-def wait_for_ingest_job(api_url: str, job_id: str) -> IngestJobStatusResponse:
-    """Poll until the lifespan worker finishes; toasts stay until dismissed or replaced."""
-    deadline = time.monotonic() + INGEST_POLL_TIMEOUT_SECONDS
-    last_key: tuple[str, str | None] | None = None
-    while True:
-        job = fetch_ingest_job(api_url, job_id)
-        key = (job.status, job.stage)
-        if key != last_key:
-            toast_ingest_progress(job)
-            last_key = key
-        if job.status in {"completed", "failed", "duplicate"}:
-            return job
-        if time.monotonic() >= deadline:
-            raise httpx.TimeoutException(
-                f"Ingest job {job_id} still {job.status} after "
-                f"{int(INGEST_POLL_TIMEOUT_SECONDS)}s"
-            )
-        time.sleep(INGEST_POLL_INTERVAL_SECONDS)
+def format_elapsed(seconds: float) -> str:
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:d}:{secs:02d}"
+
+
+def patch_ingest_metadata(
+    api_url: str,
+    job_id: str,
+    data: dict[str, object],
+) -> IngestJobStatusResponse:
+    response = httpx.patch(
+        f"{api_url}/ingest/jobs/{job_id}/metadata",
+        json=data,
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    return IngestJobStatusResponse.model_validate(response.json())
+
+
+def build_ingest_form_data(
+    tenant_id: str,
+    company_name: str,
+    upload_doc_type: DocType | None,
+    upload_category: Category | None,
+    upload_year: int | None,
+    upload_quarter: int | None,
+    upload_language: Language | None,
+) -> dict[str, object]:
+    ingest_data: dict[str, object] = {"tenant_id": tenant_id}
+    if company_name.strip():
+        ingest_data["company_name"] = company_name.strip()
+    if upload_doc_type is not None:
+        ingest_data["doc_type"] = upload_doc_type.value
+    if upload_category is not None:
+        ingest_data["category"] = upload_category.value
+    if upload_year:
+        ingest_data["year"] = int(upload_year)
+    if upload_quarter:
+        ingest_data["quarter"] = upload_quarter
+    if upload_language is not None:
+        ingest_data["language"] = upload_language.value
+    return ingest_data
 
 
 with st.sidebar:
@@ -400,10 +456,17 @@ with chat_tab:
                     st.session_state.messages.append({"role": "assistant", "content": answer})
 
 with upload_tab:
-    st.subheader("Upload document")
+    st.subheader("Upload documents")
+    if "batch_job_ids" not in st.session_state:
+        st.session_state.batch_job_ids = []
+    if "batch_started_at" not in st.session_state:
+        st.session_state.batch_started_at = None
+    if "batch_toast_keys" not in st.session_state:
+        st.session_state.batch_toast_keys = {}
+
     with st.form("ingest"):
-        uploaded = st.file_uploader(
-            "File",
+        uploaded_files = st.file_uploader(
+            "Files",
             type=[
                 "pdf",
                 "png",
@@ -421,6 +484,7 @@ with upload_tab:
                 "html",
                 "htm",
             ],
+            accept_multiple_files=True,
         )
         company_name = st.text_input("Company name", value="", placeholder="Auto from document")
         upload_doc_type = st.selectbox(
@@ -450,43 +514,168 @@ with upload_tab:
         submitted = st.form_submit_button("Upload and index")
 
     if submitted:
-        if uploaded is None:
-            st.warning("Choose a file first.")
+        if not uploaded_files:
+            st.warning("Choose at least one file first.")
         else:
-            with st.spinner("Queueing the upload..."):
+            ingest_data = build_ingest_form_data(
+                tenant_id,
+                company_name,
+                upload_doc_type,
+                upload_category,
+                upload_year,
+                upload_quarter,
+                upload_language,
+            )
+            job_ids: list[str] = []
+            with st.spinner(f"Queueing {len(uploaded_files)} upload(s)..."):
                 try:
-                    ingest_data: dict[str, object] = {
-                        "tenant_id": tenant_id,
-                    }
-                    if company_name.strip():
-                        ingest_data["company_name"] = company_name.strip()
-                    if upload_doc_type is not None:
-                        ingest_data["doc_type"] = upload_doc_type.value
-                    if upload_category is not None:
-                        ingest_data["category"] = upload_category.value
-                    if upload_year:
-                        ingest_data["year"] = int(upload_year)
-                    if upload_quarter:
-                        ingest_data["quarter"] = upload_quarter
-                    if upload_language is not None:
-                        ingest_data["language"] = upload_language.value
-                    accepted = submit_ingest(
-                        api_url,
-                        files={"file": (uploaded.name, uploaded.getvalue(), uploaded.type)},
-                        data=ingest_data,
-                    )
-                    result = wait_for_ingest_job(api_url, accepted.job_id)
+                    for uploaded in uploaded_files:
+                        accepted = submit_ingest(
+                            api_url,
+                            files={
+                                "file": (
+                                    uploaded.name,
+                                    uploaded.getvalue(),
+                                    uploaded.type,
+                                )
+                            },
+                            data=ingest_data,
+                        )
+                        job_ids.append(accepted.job_id)
                 except httpx.HTTPError as error:
                     st.error(f"Upload failed: {error}")
                 else:
-                    if result.status == "failed":
-                        st.error(f"Upload failed: {result.error or 'unknown error'}")
-                    elif result.status == "duplicate":
-                        st.info(
-                            f"The file is already indexed with {result.chunk_count} chunks. "
-                            "No new parsing was done."
-                        )
-                        st.caption(f"Object: `{result.object_key}`")
+                    st.session_state.batch_job_ids = job_ids
+                    st.session_state.batch_started_at = time.monotonic()
+                    st.session_state.batch_toast_keys = {}
+                    st.rerun()
+
+    batch_job_ids: list[str] = st.session_state.batch_job_ids
+    if batch_job_ids:
+        try:
+            jobs = [fetch_ingest_job(api_url, job_id) for job_id in batch_job_ids]
+        except httpx.HTTPError as error:
+            st.error(f"Could not poll ingest jobs: {error}")
+            jobs = []
+
+        if jobs:
+            started_at = st.session_state.batch_started_at or time.monotonic()
+            elapsed = time.monotonic() - started_at
+            done_count = sum(1 for job in jobs if job.status in TERMINAL_INGEST_STATUSES)
+            st.metric("Elapsed", format_elapsed(elapsed))
+            st.caption(f"{done_count} / {len(jobs)} finished")
+
+            toast_keys: dict[str, tuple[str, str | None]] = st.session_state.batch_toast_keys
+            for job in jobs:
+                key = (job.status, job.stage)
+                if toast_keys.get(job.job_id) != key:
+                    toast_ingest_progress(job)
+                    toast_keys[job.job_id] = key
+            st.session_state.batch_toast_keys = toast_keys
+
+            for job in jobs:
+                label = job.filename or job.job_id
+                if job.status == "running" and job.stage:
+                    detail = STAGE_LABELS.get(job.stage, job.stage)
+                    st.write(f"**{label}** — {job.status} ({detail})")
+                elif job.status == "needs_metadata":
+                    missing = ", ".join(job.missing_fields) or "metadata"
+                    st.write(f"**{label}** — needs {missing}")
+                elif job.status == "failed":
+                    st.write(f"**{label}** — failed: {job.error or 'unknown error'}")
+                elif job.status in {"completed", "duplicate"}:
+                    st.write(
+                        f"**{label}** — {job.status} ({job.chunk_count} chunks)"
+                    )
+                else:
+                    st.write(f"**{label}** — {job.status}")
+
+            waiting = [job for job in jobs if job.status == "needs_metadata"]
+            if waiting:
+                blocked = waiting[0]
+                st.warning(
+                    f"`{blocked.filename}` needs metadata: "
+                    + ", ".join(blocked.missing_fields)
+                )
+                with st.form(f"metadata_fix_{blocked.job_id}"):
+                    fix_company = st.text_input(
+                        "Company name",
+                        value="",
+                        placeholder="Required if missing",
+                        key=f"fix_company_{blocked.job_id}",
+                    )
+                    fix_doc_type = st.selectbox(
+                        "Document type",
+                        options=[None, *DocType],
+                        format_func=lambda x: "Leave unchanged" if x is None else x,
+                        key=f"fix_doc_type_{blocked.job_id}",
+                    )
+                    fix_category = st.selectbox(
+                        "Category",
+                        options=[None, *Category],
+                        format_func=lambda x: "Leave unchanged" if x is None else x,
+                        key=f"fix_category_{blocked.job_id}",
+                    )
+                    fix_year = st.number_input(
+                        "Year",
+                        min_value=1990,
+                        max_value=2100,
+                        value=None,
+                        step=1,
+                        key=f"fix_year_{blocked.job_id}",
+                    )
+                    fix_quarter = st.selectbox(
+                        "Quarter",
+                        options=[None, 1, 2, 3, 4],
+                        format_func=lambda x: "Leave unchanged" if x is None else f"Q{x}",
+                        key=f"fix_quarter_{blocked.job_id}",
+                    )
+                    fix_language = st.selectbox(
+                        "Language",
+                        options=[None, *Language],
+                        format_func=lambda x: (
+                            "Leave unchanged" if x is None else x.value
+                        ),
+                        key=f"fix_language_{blocked.job_id}",
+                    )
+                    continued = st.form_submit_button("Continue with metadata")
+
+                if continued:
+                    patch: dict[str, object] = {}
+                    if fix_company.strip():
+                        patch["company_name"] = fix_company.strip()
+                    if fix_doc_type is not None:
+                        patch["doc_type"] = fix_doc_type.value
+                    if fix_category is not None:
+                        patch["category"] = fix_category.value
+                    if fix_year:
+                        patch["year"] = int(fix_year)
+                    if fix_quarter is not None:
+                        patch["quarter"] = fix_quarter
+                    if fix_language is not None:
+                        patch["language"] = fix_language.value
+                    if not patch:
+                        st.error("Fill at least the missing fields before continuing.")
                     else:
-                        st.success(f"Indexed {result.chunk_count} chunks")
-                        st.caption(f"Object: `{result.object_key}`")
+                        try:
+                            patch_ingest_metadata(api_url, blocked.job_id, patch)
+                        except httpx.HTTPError as error:
+                            st.error(f"Could not resume job: {error}")
+                        else:
+                            st.rerun()
+
+            running_or_queued = any(job.status in {"queued", "running"} for job in jobs)
+            if running_or_queued:
+                # Keep polling other files even while one waits for metadata.
+                time.sleep(INGEST_POLL_INTERVAL_SECONDS)
+                st.rerun()
+            elif not any(job.status in ACTIVE_INGEST_STATUSES for job in jobs):
+                st.success(
+                    f"Batch finished in {format_elapsed(elapsed)} "
+                    f"({done_count} / {len(jobs)} terminal)."
+                )
+                if st.button("Clear batch status"):
+                    st.session_state.batch_job_ids = []
+                    st.session_state.batch_started_at = None
+                    st.session_state.batch_toast_keys = {}
+                    st.rerun()

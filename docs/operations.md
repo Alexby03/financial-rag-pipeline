@@ -38,14 +38,23 @@ Spreadsheets are not sent to Mistral — they are parsed locally with openpyxl. 
 see this error, the API process is on an older build; restart after pulling. DOCX/PPTX still
 use OCR and can hit the same limit on very large Office packages.
 
-**Ingest job fails with `Could not determine company_name, ...`.**
-OCR `document_annotation` did not fill the blanks and the upload form left them empty. Fill
-them on upload, or re-try with a document that has a readable title page. Do not expect `.txt`
-passthrough to infer metadata. Language is assessed the same way (`sv`, `en`, `dk`, `no`,
-`fi`, `de`, `fr`, `other`) unless you set it on the form. SIE files auto-fill
-`doc_type=accounting_data`, `category=financing`, `language=sv`, plus `company_name` / `year`
-from `#FNAMN` / `#RAR` when present. `accounting_data` is a document type, not a category —
-leave category on Auto for SIE.
+**Ingest fails with `Invalid 'input': array length must be 2048 or less` or `maximum request size is 300000 tokens`.**
+OpenAI embeddings caps. Current builds batch embed calls (512 inputs / ~600k chars). If you
+still see this, the API process is on an older build — restart after pulling.
+
+**Ingest fails with Qdrant `JSON payload … is larger than allowed (limit: 33554432 bytes)`.**
+Too many points in one upsert (large PDFs). Current builds upsert in batches of 64. Restart
+the API after pulling if you still hit it.
+
+**Ingest job fails with `Could not determine company_name, ...` / status `needs_metadata`.**
+OCR `document_annotation` did not fill the blanks and the upload form left them empty. The
+MinIO object is kept; fill the missing fields in the Upload tab and continue, or re-try with
+a document that has a readable title page. Do not expect `.txt` passthrough to infer
+metadata. Language is assessed the same way (`sv`, `en`, `dk`, `no`, `fi`, `de`, `fr`,
+`other`) unless you set it on the form. SIE files auto-fill `doc_type=accounting_data`,
+`category=financing`, `language=sv`, plus `company_name` / `year` from `#FNAMN` / `#RAR`
+when present. `accounting_data` is a document type, not a category — leave category on Auto
+for SIE.
 
 **SIE ingest fails with `Failed to parse SIE file` or `Could not determine year`.**
 The bytes are not valid SIE 4, or date tags are missing. Open the file and look for
@@ -166,10 +175,12 @@ different bytes and are indexed as separate documents.
 expires, with no further authorization. `PRESIGNED_URL_TTL_SECONDS` (default 900) is the only
 control, and shortening it is the cheapest mitigation.
 
-**Ingest jobs are in-memory only.** `POST /ingest` returns `202` immediately and a lifespan
-worker runs parse/embed/upsert via `asyncio.to_thread`. A process restart drops queued and
-running jobs; re-upload. There is no cancel, retry, or multi-worker queue yet — polling
-`GET /ingest/jobs/{job_id}` is the only progress channel.
+**Ingest job payloads are in-memory; the queue is Redis.** `POST /ingest` returns `202`
+immediately and a lifespan worker runs parse/embed/upsert via `asyncio.to_thread`, pulling
+job ids from a Redis list. A process restart drops in-memory job state (even if Redis still
+has ids); re-upload. Completed documents remain in MinIO and Qdrant. There is no cancel or
+automatic retry — poll `GET /ingest/jobs/{job_id}` (and `PATCH .../metadata` when status is
+`needs_metadata`).
 
 **Chunk text leaves the OpenAI boundary when reranking is on.** Candidate chunks are sent to the
 Cohere deployment on Azure. For Financial material this is a data residency question worth answering
@@ -184,8 +195,8 @@ inspectable, which is not the same as knowing whether a change helped on average
 
 ## Local environment
 
-Qdrant and MinIO come from `docker compose up -d qdrant minio minio-init`. The collection is
-created by `python -m app.scripts.init_qdrant`, which is idempotent.
+Qdrant, MinIO, and Redis come from `docker compose up -d qdrant minio minio-init redis`.
+The collection is created by `python -m app.scripts.init_qdrant`, which is idempotent.
 
 The test suite needs neither the Docker services nor a valid API key: external services are
 replaced with fakes and all HTTP is mocked, including the Streamlit test that renders the app

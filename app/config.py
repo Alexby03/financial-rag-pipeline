@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     qdrant_collection: str = "ma_documents"
 
+    redis_url: str = "redis://localhost:6379/0"
+    redis_ingest_queue_key: str = "ingest:jobs"
+
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"

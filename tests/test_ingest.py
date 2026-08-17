@@ -271,14 +271,17 @@ def test_submitted_form_fields_win_over_annotation() -> None:
     assert merged.language == Language.EN
 
 
-def test_missing_metadata_after_merge_fails_the_job() -> None:
+def test_missing_metadata_after_merge_keeps_minio_object() -> None:
     storage = FakeStorage()
     service = build_service(FakeQdrant(), FakeParser(), storage=storage)
-    with pytest.raises(IngestMetadataError, match="company_name"):
+    with pytest.raises(IngestMetadataError, match="company_name") as exc_info:
         service.ingest(FILE_BYTES, "notes.txt", IngestMetadata(tenant_id="tenant_1"))
-    assert storage.deletes
-    assert storage.deletes[0].endswith("notes.txt")
-    assert storage.uploads == []
+    assert storage.deletes == []
+    assert len(storage.uploads) == 1
+    assert storage.uploads[0][0].endswith("notes.txt")
+    assert "company_name" in exc_info.value.missing
+    assert exc_info.value.object_key.endswith("notes.txt")
+    assert exc_info.value.document_id
 
 
 def test_ocr_failure_rolls_back_the_minio_object() -> None:

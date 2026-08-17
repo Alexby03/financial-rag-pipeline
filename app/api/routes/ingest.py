@@ -1,7 +1,12 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.api.deps import get_ingest_job_manager
-from app.models.api import IngestJobAccepted, IngestJobStatusResponse, IngestMetadata
+from app.models.api import (
+    IngestJobAccepted,
+    IngestJobStatusResponse,
+    IngestMetadata,
+    IngestMetadataPatch,
+)
 from app.models.enums import Category, DocType, Language
 from app.services.ingest_jobs import IngestJobManager
 
@@ -44,3 +49,17 @@ async def get_ingest_job(
     if status is None:
         raise HTTPException(status_code=404, detail="Ingest job not found")
     return status
+
+
+@router.patch("/jobs/{job_id}/metadata", response_model=IngestJobStatusResponse)
+async def patch_ingest_job_metadata(
+    job_id: str,
+    patch: IngestMetadataPatch,
+    jobs: IngestJobManager = Depends(get_ingest_job_manager),
+) -> IngestJobStatusResponse:
+    try:
+        return await jobs.submit_metadata(job_id, patch)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Ingest job not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None

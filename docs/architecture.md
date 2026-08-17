@@ -16,15 +16,15 @@ An MVP for a multimodal RAG system in the Financial industry.
 | Figure reading | OpenAI vision model on stored MinIO crops, text fed back to the reasoner |
 | Frontend | Streamlit |
 
-Qdrant and MinIO run through Docker Compose. The API process hosts an in-memory ingest worker
-alongside HTTP; the Streamlit frontend is a pure HTTP client and holds no credentials of its
-own.
+Qdrant and MinIO run through Docker Compose, along with Redis for the ingest job
+queue. The API process hosts an ingest worker alongside HTTP; the Streamlit frontend
+is a pure HTTP client and holds no credentials of its own.
 
 ## Shape
 
 ```
                  ┌───────────┐
-   upload  ──────▶  FastAPI  ├──queue──▶ lifespan worker
+   upload  ──────▶  FastAPI  ├──Redis──▶ lifespan worker
                  │  (202)    │              │
                  │           ├──────────────┼──▶ MinIO        (original files + figure crops)
    job status ───▶           │              ├──▶ Qdrant       (chunks + metadata)

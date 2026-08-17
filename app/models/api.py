@@ -5,7 +5,14 @@ from pydantic import BaseModel, Field
 from app.models.enums import Category, DocType, Language
 from app.models.metadata import ChunkMetadata
 
-IngestJobStatus = Literal["queued", "running", "completed", "failed", "duplicate"]
+IngestJobStatus = Literal[
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "duplicate",
+    "needs_metadata",
+]
 IngestJobStage = Literal["checking", "uploading", "parsing", "embedding", "indexing"]
 
 
@@ -17,6 +24,17 @@ class IngestMetadata(BaseModel):
     year: int | None = None
     quarter: int | None = Field(default=None, ge=1, le=4)
     # None means Auto — filled from OCR / parser annotation at ingest time.
+    language: Language | None = None
+
+
+class IngestMetadataPatch(BaseModel):
+    """Fields supplied when a job is paused on needs_metadata."""
+
+    company_name: str | None = None
+    doc_type: DocType | None = None
+    category: Category | None = None
+    year: int | None = None
+    quarter: int | None = Field(default=None, ge=1, le=4)
     language: Language | None = None
 
 
@@ -41,6 +59,8 @@ class IngestJobStatusResponse(BaseModel):
     document_id: str = ""
     chunk_count: int = 0
     object_key: str = ""
+    filename: str = ""
+    missing_fields: list[str] = Field(default_factory=list)
     error: str | None = None
 
 

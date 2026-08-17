@@ -20,6 +20,22 @@ ProgressCallback = Callable[[IngestJobStage], None]
 class IngestMetadataError(ValueError):
     """Raised when OCR and the upload form together cannot fill required metadata."""
 
+    def __init__(
+        self,
+        missing: list[str],
+        *,
+        object_key: str = "",
+        document_id: str = "",
+    ) -> None:
+        self.missing = missing
+        self.object_key = object_key
+        self.document_id = document_id
+        super().__init__(
+            "Could not determine "
+            + ", ".join(missing)
+            + ". Fill them on upload, or use a document OCR can read."
+        )
+
 
 class IngestService:
     def __init__(
@@ -42,6 +58,9 @@ class IngestService:
         filename: str,
         metadata: IngestMetadata,
         on_progress: ProgressCallback | None = None,
+        *,
+        resume_object_key: str | None = None,
+        resume_document_id: str | None = None,
     ) -> IngestResponse:
         def report(stage: IngestJobStage) -> None:
             if on_progress is not None:
@@ -62,19 +81,34 @@ class IngestService:
                 status="duplicate",
             )
 
-        document_id = Chunker.new_document_id()
-        object_key = f"{metadata.tenant_id}/{document_id}/{filename}"
+        if resume_object_key and resume_document_id:
+            document_id = resume_document_id
+            object_key = resume_object_key
+            skip_source_upload = True
+        else:
+            document_id = Chunker.new_document_id()
+            object_key = f"{metadata.tenant_id}/{document_id}/{filename}"
+            skip_source_upload = False
+
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         uploaded_keys: list[str] = []
 
         try:
-            report("uploading")
-            self._storage.upload(object_key, file_bytes, content_type)
-            uploaded_keys.append(object_key)
+            if not skip_source_upload:
+                report("uploading")
+                self._storage.upload(object_key, file_bytes, content_type)
+                uploaded_keys.append(object_key)
 
             report("parsing")
             parsed = self._parser.parse(file_bytes, filename)
-            metadata = merge_ingest_metadata(metadata, parsed.annotation)
+            try:
+                metadata = merge_ingest_metadata(metadata, parsed.annotation)
+            except IngestMetadataError as exc:
+                raise IngestMetadataError(
+                    exc.missing,
+                    object_key=object_key,
+                    document_id=document_id,
+                ) from None
 
             if parsed.content_format == "json":
                 text_chunks = [
@@ -117,6 +151,9 @@ class IngestService:
                 vectors = self._embedder.embed_texts([payload.raw_text for payload in payloads])
                 report("indexing")
                 self._qdrant.upsert_chunks(vectors, payloads)
+        except IngestMetadataError:
+            # Keep the source object so the UI can supply missing fields and resume.
+            raise
         except Exception:
             self._rollback_uploads(uploaded_keys)
             raise
@@ -166,11 +203,7 @@ def merge_ingest_metadata(
     if language is None:
         missing.append("language")
     if missing:
-        raise IngestMetadataError(
-            "Could not determine "
-            + ", ".join(missing)
-            + ". Fill them on upload, or use a document OCR can read."
-        )
+        raise IngestMetadataError(missing)
 
     assert company_name is not None
     assert doc_type is not None

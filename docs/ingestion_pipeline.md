@@ -5,17 +5,20 @@ How a document becomes searchable. How each file type becomes Markdown is descri
 [rag_strategy.md](rag_strategy.md). Ranking is [ranking.md](ranking.md).
 
 Entry point: `POST /ingest` accepts the upload and returns `202` with a `job_id`. A lifespan
-worker drains an in-memory queue and runs `IngestService.ingest` off the event loop. Poll
-`GET /ingest/jobs/{job_id}` for `queued` → `running` → `completed` | `duplicate` | `failed`.
-Duplicate detection still happens inside the worker so batch uploads can share the same path.
+worker drains a Redis list of job ids and runs `IngestService.ingest` off the event loop. Poll
+`GET /ingest/jobs/{job_id}` for `queued` → `running` → `completed` | `duplicate` | `failed` |
+`needs_metadata`. Duplicate detection still happens inside the worker so batch uploads can
+share the same path. When metadata cannot be filled after parse, the job pauses as
+`needs_metadata` (MinIO object kept); `PATCH /ingest/jobs/{job_id}/metadata` supplies the
+missing fields and re-queues the job. Other queued jobs keep processing.
 
 ```
-file bytes → enqueue → (worker) hash → MinIO → parse → chunk → link → embed → Qdrant
+file bytes → Redis enqueue → (worker) hash → MinIO → parse → chunk → link → embed → Qdrant
                 └─ 202 job_id
 ```
 
-Jobs are not durable across process restarts; re-upload after a crash. That is an accepted MVP
-trade-off until a real queue is introduced.
+Job *payloads* are not durable across process restarts (only the Redis id list survives);
+re-upload after a crash. Completed documents already live in MinIO and Qdrant.
 
 ## 1. Identity, then storage
 
@@ -31,9 +34,10 @@ before hashing each one produced its own complete set of chunks — paid for twi
 twice, competing for slots in the same answer.
 
 Once a document is known to be new, it is stored before it is parsed so every later step has
-an `object_key`. If parse, embed, or index fails, those MinIO objects (the original file and
-any figures) are deleted before the job is marked failed. A blob without an indexed document
-is not left behind.
+an `object_key`. If parse, embed, or index fails for a non-metadata reason, those MinIO objects
+(the original file and any figures) are deleted before the job is marked failed. A metadata
+gap after parse does **not** roll back the source object — the job becomes `needs_metadata`
+so the UI can fill the blanks and resume.
 
 - `document_id` is a fresh UUID per ingest.
 - `object_key` is `{tenant_id}/{document_id}/{filename}` and is written into every chunk's
@@ -136,7 +140,8 @@ Valid enums:
 Company name, document type, category, year, quarter, and language may be left blank on
 upload. OCR `document_annotation` (and SIE / Excel local parsers where they can) fills the
 gaps; explicit form values win. SIE ledgers default `language` to `sv`. If a required field
-is still blank after merge, the job fails.
+is still blank after merge, the job status becomes `needs_metadata` instead of failing, and
+the Streamlit upload tab asks for the missing fields before the worker resumes.
 
 `app/scripts/init_qdrant.py` creates the collection with cosine distance and payload indexes on
 `tenant_id`, `doc_type`, `category`, `year`, `quarter`, `company_name` and `source_filename`.
@@ -147,8 +152,11 @@ that reason — see [operations.md](operations.md).
 
 ## 6. Embedding and upsert
 
-Chunk texts are embedded in one batch with `text-embedding-3-small` (1536 dimensions) and
-upserted with the chunk UUID as the point id.
+Chunk texts are embedded with `text-embedding-3-small` (1536 dimensions) and upserted with
+the chunk UUID as the point id. Large documents are split across multiple OpenAI requests
+(max 512 inputs / ~600k characters each) so ingest stays under the API's 2048-input and
+300k-token caps, and Qdrant upserts are chunked (64 points) so the HTTP body stays under
+Qdrant's 32 MiB limit.
 
 Before upserting, the previous version of the document is deleted. The delete matches on
 `tenant_id` and then on *either* the filename or the content hash, so a document that was edited

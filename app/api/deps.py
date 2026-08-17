@@ -62,7 +62,12 @@ def get_ingest_service() -> IngestService:
 
 @lru_cache
 def get_ingest_job_manager() -> IngestJobManager:
-    return IngestJobManager()
+    from app.services.ingest_jobs import RedisJobQueue
+
+    settings = get_settings()
+    return IngestJobManager(
+        _queue=RedisJobQueue(settings.redis_url, settings.redis_ingest_queue_key),
+    )
 
 
 @lru_cache

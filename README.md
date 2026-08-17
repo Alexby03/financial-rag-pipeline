@@ -13,7 +13,7 @@ Multimodal RAG MVP for Financial documents. Stack: FastAPI, Qdrant, MinIO, Mistr
 
 ```bash
 # 1. Start infrastructure
-docker compose up -d qdrant minio minio-init
+docker compose up -d qdrant minio minio-init redis
 
 # 2. Install dependencies
 pip install -e ".[dev]"
@@ -41,7 +41,8 @@ Chat UI: http://localhost:8501
 |--------|------|-------------|
 | GET | `/health` | Health check for Qdrant and MinIO |
 | POST | `/ingest` | Accept a document upload (`202` + `job_id`); work continues in the API worker |
-| GET | `/ingest/jobs/{job_id}` | Poll ingest job status (`queued` / `running` / `completed` / `duplicate` / `failed`) |
+| GET | `/ingest/jobs/{job_id}` | Poll ingest job status (`queued` / `running` / `completed` / `duplicate` / `failed` / `needs_metadata`) |
+| PATCH | `/ingest/jobs/{job_id}/metadata` | Supply missing metadata and re-queue a `needs_metadata` job |
 | POST | `/query` | RAG query with tenant and optional filters |
 | GET | `/sources/url` | Presigned MinIO URL for a chunk's source file |
 
@@ -89,8 +90,9 @@ For project endpoints `COHERE_RERANK_MODEL` must match the deployment name exact
   for the original file. PDFs open inline on the cited page, spreadsheets and other formats
   download. Figure chunks also open the parent PDF, not the stored crop. The bytes go straight
   from MinIO to the browser rather than being proxied through the API.
-- **Upload tab**: accepts a document, then polls the ingest job while a non-dismissible toast
-  shows queue/stage progress until indexing finishes.
+- **Upload tab**: accepts one or many documents, shows an elapsed timer for the batch, and
+  polls each ingest job. If a job needs metadata the form asks for the missing fields and
+  continues while other files keep processing.
 
 Point the frontend at another API with `RAG_API_URL`. When the API runs inside Docker, set
 `MINIO_PUBLIC_ENDPOINT` to the host the browser can reach, since presigned URLs are signed
@@ -111,7 +113,7 @@ curl -X POST "http://localhost:8000/ingest" \
 # language is optional — OCR fills sv/en/dk/no/… when omitted
 # → {"job_id":"...","status":"queued"}
 
-# Poll until completed / duplicate / failed
+# Poll until completed / duplicate / failed / needs_metadata
 curl "http://localhost:8000/ingest/jobs/<job_id>"
 ```
 
