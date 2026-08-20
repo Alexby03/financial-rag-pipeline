@@ -105,7 +105,7 @@ class Chunker:
         column_periods = inherited_column_periods
         pending: list[str] = []
 
-        for block in self._split_markdown_blocks(normalized):
+        for block in self._merge_table_row_narratives(self._split_markdown_blocks(normalized)):
             periods = self._column_periods_from_block(block)
             if periods:
                 column_periods = periods
@@ -121,9 +121,16 @@ class Chunker:
             if self._is_markdown_table(block) or self._is_tsv_financial_table(block):
                 chunks.extend(self._flush(pending, headings, page_number))
                 pending = []
+                local_periods = self._column_periods_from_block(block)
+                # Markdown tables already include headers. Do not stamp an earlier
+                # table's years onto a side-by-side sensitivity matrix on the same page.
+                if self._is_markdown_table(block):
+                    inject_periods = local_periods
+                else:
+                    inject_periods = local_periods or column_periods
                 chunks.append(
                     TextChunk(
-                        text=self._with_context(block, headings, column_periods),
+                        text=self._with_context(block, headings, inject_periods),
                         page_number=page_number,
                     )
                 )
@@ -188,11 +195,7 @@ class Chunker:
         headings: dict[int, str],
         page_number: int,
     ) -> list[TextChunk]:
-        """Prose chunks keep heading breadcrumbs, not sticky Kolumner labels.
-
-        Column periods are for tables. Stamping them onto every later slide
-        (pitch-deck cards, disclaimers) invents years that are not on the page.
-        """
+        """Prose chunks keep heading breadcrumbs only — not sticky period labels."""
         if not pending:
             return []
         return [
@@ -215,9 +218,6 @@ class Chunker:
         parts: list[str] = []
         if headings:
             parts.append(" > ".join(headings[level] for level in sorted(headings)))
-        if column_periods:
-            # Explicit left→right map; also mirrored in markdown table headers when possible.
-            parts.append(f"Kolumner (vänster→höger efter radetikett): {column_periods}")
         if not parts:
             return body
         return "\n".join(parts) + "\n\n" + body
@@ -329,6 +329,28 @@ class Chunker:
             start = max(end - self._chunk_overlap, start + 1)
 
         return chunks
+
+    @staticmethod
+    def _merge_table_row_narratives(blocks: list[str]) -> list[str]:
+        """Keep spreadsheet row narratives attached to the table chunk above them."""
+        merged: list[str] = []
+        index = 0
+        while index < len(blocks):
+            block = blocks[index]
+            if (
+                index + 1 < len(blocks)
+                and (
+                    Chunker._is_markdown_table(block)
+                    or Chunker._is_tsv_financial_table(block)
+                )
+                and blocks[index + 1].startswith("Rows:")
+            ):
+                merged.append(f"{block}\n\n{blocks[index + 1]}")
+                index += 2
+                continue
+            merged.append(block)
+            index += 1
+        return merged
 
     @staticmethod
     def _column_periods_from_block(block: str) -> str | None:
