@@ -58,6 +58,7 @@ known gaps.
 
 - [ingestion_pipeline.md](ingestion_pipeline.md) — how documents become searchable
 - [document_formats.md](document_formats.md) — how each file type becomes Markdown
+- [spreadsheet_parsing.md](spreadsheet_parsing.md) — Excel structure detection, titles, floats
 - [rag_strategy.md](rag_strategy.md) — how a question becomes an answer (map)
 - [ranking.md](ranking.md) — recall, BM25, RRF, Cohere, entity scope
 - [answering.md](answering.md) — neighbours, vision, generation, sources

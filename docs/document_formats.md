@@ -9,7 +9,7 @@ stages around parse are described in [ingestion_pipeline.md](ingestion_pipeline.
 |-------|----------|--------|
 | PDF | Mistral OCR 4, split into 30-page slices (Foundry cap) | Markdown pages + figures |
 | DOCX, PPTX, images | Mistral OCR 4 (`/ocr`, one call) | Markdown pages + figures |
-| Excel (`.xlsx`, `.xlsm`) | openpyxl → Markdown tables (no OCR) | One Markdown page per sheet |
+| Excel (`.xlsx`, `.xlsm`) | Local spreadsheet pipeline → Markdown (+ row narratives); see [spreadsheet_parsing.md](spreadsheet_parsing.md) | One Markdown page per sheet |
 | Plain text / Markdown | Verbatim decode | Single Markdown page |
 | SIE (`.sie`, `.si`, `.se`) | Lean vendored SIE 4 parser → LLM summaries (no OCR) | Markdown summary pages |
 | XHTML / HTML | Headless Edge/Chrome print → PDF → OCR (30-page slices) | Markdown pages + figures |
@@ -48,16 +48,15 @@ blank.
 ## Excel workbooks
 
 `.xlsx` / `.xlsm` bypass OCR (Foundry's Office path can explode a small grid past the 128k
-context). `openpyxl` reads cached values, splits each sheet on blank-row gaps (stacked tables)
-and blank-column gaps (side-by-side parallel tables), and emits Markdown with year/period
-columns in the header row — the same breadcrumb pattern as Bolagsverket balance sheets
-(`Kolumner …` via the chunker, `Sheet > Table` headings). Note strips without their own year
-grid stay attached to the table on their left. Raw bytes stay in MinIO. That `Kolumner`
-prefix is applied only to **table** chunks, and only for years 1990+. It is not SIE residue:
-SIE and Excel set `carry_page_context=False` so sheets cannot inherit each other's
-breadcrumbs. OCR PDFs do carry period headers across page breaks so a balance-sheet
-continuation still knows which date column is which — they must not be stamped onto
-later prose slides.
+context). `openpyxl` loads cached cell values (with a formula fallback), pandas holds the
+grid, and connected-components split each sheet into side-by-side and stacked subtables.
+Each subtable is rendered as Markdown with period labels in the header row, optional
+`Rows:` narratives (`label: period=value`) when header confidence is high, and
+`Sheet > Table` breadcrumbs via the chunker. Note strips without their own year grid stay
+attached to the table on their left (row-aligned). Raw bytes stay in MinIO. SIE and Excel
+set `carry_page_context=False` so sheets cannot inherit each other's breadcrumbs. OCR PDFs
+do carry period headers across page breaks so a balance-sheet continuation still knows which
+date column is which — they must not be stamped onto later prose slides.
 
 ## OCR → Markdown
 

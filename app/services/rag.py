@@ -57,12 +57,11 @@ anywhere in Context chunks. Never ask the user to resend pages that are already 
 Prior conversation turns may be wrong about missing data; prefer the current Context chunks
 over earlier assistant denials.
 
-Financial tables often carry period labels as
-"Kolumner (vänster→höger efter radetikett): YYYY-MM-DD | YYYY-MM-DD" and/or as markdown
-table header cells (Post | date1 | date2). Those dates are column headers left→right after
-the row label (first amount column = first date, second = second date). When the user asks
-for calendar year YYYY, use the column whose period ends in YYYY (e.g. 2024-06-30 for
-"2024") unless they specify a different basis. Quote the amount with its period date.
+Financial tables use markdown header cells for period columns (Post | date1 | date2) and
+may include row summaries below the table (Rows: label: period=value). Match amounts to
+the column header for the requested year. When the user asks for calendar year YYYY, use
+the column whose period ends in YYYY (e.g. 2024-06-30 for "2024") unless they specify a
+different basis. Quote the amount with its period date.
 
 Each chunk includes chunk_id, previous_chunk_id, and next_chunk_id (a double-linked list).
 Use neighbors when a table or clause continues across chunks.

@@ -70,12 +70,12 @@ retrieve.
   `Aktiekapital\t100 000\t100 000` instead of pipe tables; those rows stay together.
 - **Period column headers stick to later tables.** When a page (or an earlier page) shows
   `2025-06-30` and `2024-06-30` as balance-sheet columns — or year labels like `1991` /
-  `2004E` from Excel models — later **table** chunks get
-  `Kolumner (vänster→höger efter radetikett): …` in the prefix (and the same labels injected
-  into markdown table headers when missing) so retrieval does not lose which year an amount
-  belongs to. Prose slides do not get that prefix: a pitch-deck card after a financial table
-  must not inherit `1934 | 1933`. Years before 1990 are ignored (the Exchange Act of 1934
-  and the Securities Act of 1933 on a forward-looking-statements slide are not FY columns).
+  `2004E` from Excel models — later **table** chunks get period labels injected into
+  markdown table headers when missing (and spreadsheet tables may include a `Rows:` narrative
+  block below the pipe table) so retrieval does not lose which year an amount belongs to.
+  Prose slides do not get period stamps: a pitch-deck card after a financial table must not
+  inherit `1934 | 1933`. Years before 1990 are ignored (the Exchange Act of 1934 and the
+  Securities Act of 1933 on a forward-looking-statements slide are not FY columns).
   Narrative "2023 and 2024" is not a column header; only table / tab / multi-space
   header rows are.
 - **Paragraphs under the same heading are merged** until `chunk_size` is reached, so chunks are
