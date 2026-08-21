@@ -14,11 +14,11 @@ An MVP for a multimodal RAG system in the Financial industry.
 | Reranking | Cohere Rerank via Azure AI Foundry (optional) |
 | Answer generation | OpenAI reasoning model through the Responses API |
 | Figure reading | OpenAI vision model on stored MinIO crops, text fed back to the reasoner |
-| Frontend | Streamlit |
+| Frontend | Any HTTP client (see [api_guide.md](api_guide.md)); Streamlit was the MVP UI |
 
 Qdrant and MinIO run through Docker Compose, along with Redis for the ingest job
-queue. The API process hosts an ingest worker alongside HTTP; the Streamlit frontend
-is a pure HTTP client and holds no credentials of its own.
+queue. The API process hosts an ingest worker alongside HTTP. Frontends are pure
+HTTP clients and hold no MinIO/Qdrant credentials of their own.
 
 ## Shape
 
@@ -56,6 +56,7 @@ known gaps.
 
 ## Documentation
 
+- [api_guide.md](api_guide.md) — REST endpoints and DTOs for frontend clients
 - [ingestion_pipeline.md](ingestion_pipeline.md) — how documents become searchable
 - [document_formats.md](document_formats.md) — how each file type becomes Markdown
 - [rag_strategy.md](rag_strategy.md) — how a question becomes an answer (map)
