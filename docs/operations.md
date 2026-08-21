@@ -34,9 +34,9 @@ call (`MISTRAL_OCR_MAX_PAGES`). If this reappears, the file is not a PDF we coul
 object it uploaded; leftovers from before that rollback have to be removed in the console.
 
 **OCR answers 400 with a huge token count on a small `.xlsx`.**
-Spreadsheets are not sent to Mistral — they are parsed locally with openpyxl. If you still
-see this error, the API process is on an older build; restart after pulling. DOCX/PPTX still
-use OCR and can hit the same limit on very large Office packages.
+Spreadsheets are not sent to Mistral — they are parsed locally (`app/services/spreadsheet/`).
+If you still see this error, the API process is on an older build; restart after pulling.
+Re-ingest Excel files after parser changes (duplicate hash skips re-parse).
 
 **Ingest fails with `Invalid 'input': array length must be 2048 or less` or `maximum request size is 300000 tokens`.**
 OpenAI embeddings caps. Current builds batch embed calls (512 inputs / ~600k chars). If you
@@ -108,12 +108,10 @@ When it *is* applied, `trace.fusion.method` is `cohere` and hits are ordered by
 `rerank_score`. A high Rerank column with INOD at the bottom of the table means you are
 looking at an older build that still fused Cohere rank equally with BM25.
 
-**A pitch-deck chunk shows `Kolumner … 1934 | 1933` that are not on the slide.**
-That prefix is the chunker's table-period breadcrumb, not another file leaking in. The
-years came from page 2 citing the Securities Exchange Act of 1934 and the Securities
-Act of 1933; an older build treated any two 19xx tokens as fiscal columns and stamped
-them onto every later page. Re-ingest after the chunker change: `Kolumner` is table-only,
-years before 1990 are ignored. See [ingestion_pipeline.md](ingestion_pipeline.md) §3.
+**A pitch-deck chunk shows fiscal years that are not on the slide.**
+That was usually the old `Kolumner …` breadcrumb stamped onto later prose. Re-ingest after
+the chunker change: period labels are table-only now, injected into markdown headers.
+Years before 1990 are ignored.
 
 **A follow-up in the same chat retrieves the wrong company.**
 Retrieval used to embed only the current question, so "berätta om de är väl positionerade…"

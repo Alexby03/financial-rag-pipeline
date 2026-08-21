@@ -25,11 +25,10 @@ The model can cite filename and page, and tell when a table continues on the
 next chunk. Figure chunks are tagged `figure` and still carry the parent
 `object_key` and `page_number`.
 
-Financial tables often carry period labels as
-`Kolumner (vänster→höger efter radetikett): YYYY-MM-DD | YYYY-MM-DD` and/or as
-markdown header cells. Those dates are column headers left→right after the row
-label. That prefix is table-only at ingest — see
-[document_formats.md](document_formats.md) and [ingestion_pipeline.md](ingestion_pipeline.md) §3.
+Financial tables carry period labels as markdown header cells (`Post | date1 | date2`)
+and may include a `Rows:` narrative block below spreadsheet tables. Those dates are column
+headers left→right after the row label. See [document_formats.md](document_formats.md) and
+[ingestion_pipeline.md](ingestion_pipeline.md) §3.
 
 ## 3. Figure vision
 

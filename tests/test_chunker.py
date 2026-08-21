@@ -133,7 +133,6 @@ def test_balance_sheet_column_years_stick_to_tsv_rows() -> None:
     money_chunks = [chunk for chunk in chunks if "67 646" in chunk.text]
 
     assert money_chunks
-    assert "Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30" in money_chunks[0].text
     assert "| Post | 2025-06-30 | 2024-06-30 |" in money_chunks[0].text
     assert "EGET KAPITAL OCH SKULDER" in money_chunks[0].text
     assert "Årets resultat" in money_chunks[0].text
@@ -161,7 +160,7 @@ def test_column_periods_carry_across_page_break() -> None:
 
     assert len(equity) == 1
     assert equity[0].page_number == 4
-    assert "Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30" in equity[0].text
+    assert "| Post | 2025-06-30 | 2024-06-30 |" in equity[0].text
 
 
 def test_column_periods_do_not_stamp_later_prose_slides() -> None:
@@ -202,9 +201,7 @@ def test_column_periods_do_not_stamp_later_prose_slides() -> None:
         "Strategy to Lead Global AI Technology Company"
     )
     assert equity
-    assert "Kolumner (vänster→höger efter radetikett): 2025-06-30 | 2024-06-30" in (
-        equity[0].text
-    )
+    assert "| Post | 2025-06-30 | 2024-06-30 |" in equity[0].text
 
 
 def test_sec_act_years_are_not_column_periods() -> None:

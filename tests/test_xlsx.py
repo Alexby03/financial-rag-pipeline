@@ -109,10 +109,9 @@ def test_chunker_keeps_each_xlsx_table_atomic_with_year_breadcrumbs() -> None:
     assert money
     assert fcf
     assert money[0] is not fcf[0] or "Unlevered FCF" in money[0].text
-    # Year labels stick like ISO dates did for Bolagsverket tables.
-    assert "Kolumner (vänster→höger efter radetikett): 1991 | 1992 | 1993E | 2003E | 2004E" in (
-        money[0].text
-    )
+    assert "| 1991 | 1992 | 1993E | 2003E | 2004E |" in money[0].text
+    assert "Rows:" in money[0].text
+    assert "Net income: 1991=20" in money[0].text or "Net income: 2004E=58" in money[0].text
     assert "Model > Total expenses breakdown / P&L" in money[0].text
     assert "Model > FCF from Net income" in fcf[0].text
     # Tables must not be character-split despite tiny chunk_size.
@@ -196,6 +195,233 @@ def test_side_by_side_notes_without_year_grid_stay_with_left_table() -> None:
     assert "Sales" in text
 
 
+def test_side_by_side_banner_and_assumptions_stay_off_year_grid() -> None:
+    """Regression: DCF models put General Assumptions beside the year grid on row 0."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "DCF"
+
+    sheet["A1"] = "General Assumptions"
+    sheet["G1"] = "Aberlyn (USDm)"
+    sheet["H1"] = 1993
+    sheet["I1"] = 1994
+    sheet["G2"] = "Total revenue"
+    sheet["H2"] = 1.0
+    sheet["I2"] = 2.0
+    sheet["G3"] = "Net income"
+    sheet["H3"] = 0.5
+    sheet["I3"] = 1.5
+
+    # Banner is a few blank rows above the assumptions block (real Aberlyn layout).
+    sheet["B5"] = "Case"
+    sheet["C5"] = "Aberlyn"
+    sheet["B6"] = "Terminal tax"
+    sheet["C6"] = 0.34
+    sheet["B7"] = "Sustained Growth Rate"
+    sheet["C7"] = 0.02
+
+    parsed = parse_xlsx_bytes(workbook_to_bytes(workbook))
+    chunks = Chunker(Settings(openai_api_key="test-key")).split_pages(parsed.pages)
+
+    revenue = next(chunk for chunk in chunks if "Total revenue" in chunk.text)
+    assumptions = next(chunk for chunk in chunks if "Terminal tax" in chunk.text)
+
+    assert "General Assumptions" not in revenue.text
+    assert "Terminal tax" not in revenue.text
+    assert "| 1993 | 1994 |" in revenue.text
+    assert "General Assumptions" in assumptions.text
+    assert assumptions.text.startswith("DCF > General Assumptions") or (
+        "General Assumptions" in assumptions.text.split("\n\n", 1)[0]
+    )
+    assert "Sustained Growth Rate" in assumptions.text
+    assert "| 1993 | 1994 |" not in assumptions.text
+    # First data row must not become the section heading.
+    assert not assumptions.text.split("\n\n", 1)[0].endswith("Terminal tax")
+    assert " > Terminal tax" not in assumptions.text
+
+
+def workbook_to_bytes(workbook: Workbook) -> bytes:
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def test_float_uses_excel_display_format() -> None:
+    """Cached float 392.679 with format #,##0 must surface as 393, not long decimals."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet["A1"] = "Value"
+    sheet["B1"] = 392.6792663085469
+    sheet["B1"].number_format = "#,##0"
+    sheet["A2"] = "Rate"
+    sheet["B2"] = 0.017899
+    sheet["B2"].number_format = "0.0%"
+
+    from app.services.spreadsheet.loader import load_sheet_grids
+
+    grid = next(iter(load_sheet_grids(workbook_to_bytes(workbook)).values()))
+    assert grid[0][1] == "393"
+    assert grid[1][1] == "1.8%"
+
+
+def test_input_sheet_yes_no_stays_with_questions() -> None:
+    """Blank columns before Yes/No must not create a lone Yes/No/No retrieval chunk."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "Input Sheet"
+
+    sheet["A1"] = "Adjustments to Current Financial Information"
+    sheet["A2"] = "Do you have any operating leases?"
+    sheet["D2"] = "Yes"
+    sheet["A3"] = "Does your firm have R&D expenses?"
+    sheet["D3"] = "No"
+    sheet["A4"] = "Are there any other operating expenses to be capitalized?"
+    sheet["D4"] = "No"
+
+    text = parse_xlsx_bytes(workbook_to_bytes(workbook)).pages[0].text
+    assert "Do you have any operating leases?" in text
+    lease_line = next(line for line in text.splitlines() if "operating leases" in line)
+    assert "Yes" in lease_line
+    assert "| Yes |" not in text.split("operating leases")[0]  # no prior orphan Yes table
+
+
+def test_label_value_gap_keeps_amounts_with_labels() -> None:
+    """Blank column between label and amount must not orphan the number (Damodaran Options)."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "Options"
+
+    sheet["A26"] = "Value per option = "
+    sheet["C26"] = 14.321702261167152
+    sheet["C26"].number_format = '_("$"* #,##0.00_);_("$"* (#,##0.00);_("$"* "-"??_);_(@_)'
+    sheet["A27"] = "Value of all options outstanding ="
+    sheet["D27"] = 1150.605559662169
+    sheet["D27"].number_format = '"$"#,##0_);[Red]\\("$"#,##0\\)'
+
+    parsed = parse_xlsx_bytes(workbook_to_bytes(workbook))
+    text = parsed.pages[0].text
+    assert "Value per option" in text
+    assert "14.32" in text
+    assert "1151" in text
+    # Same markdown table — not a lone-number Table N.
+    option_line = next(line for line in text.splitlines() if "Value per option" in line)
+    assert "14.32" in option_line
+
+
+def test_options_dual_kv_columns_do_not_glue() -> None:
+    """Left values must not glue onto the right-hand label column (touching neighbours)."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "Options"
+
+    sheet["A1"] = "VALUING WARRANTS WHEN THERE IS DILUTION"
+    sheet["A2"] = "Stock Price="
+    sheet["C2"] = 18.7386187
+    sheet["D2"] = "# Warrants issued="
+    sheet["F2"] = 80.34
+    sheet["A3"] = "Strike Price="
+    sheet["C3"] = 27.755
+    sheet["D3"] = "# Shares outstanding="
+    sheet["F3"] = 352
+
+    text = parse_xlsx_bytes(workbook_to_bytes(workbook)).pages[0].text
+    stock_line = next(line for line in text.splitlines() if "Stock Price" in line)
+    warrants_line = next(line for line in text.splitlines() if "Warrants issued" in line)
+    assert "18.738619" in stock_line or "18.74" in stock_line
+    assert "80.34" in warrants_line
+    # Left value must not lead the warrants row.
+    assert not warrants_line.strip().startswith("| 18.")
+
+
+def test_restated_financials_wide_gap_with_notes() -> None:
+    """Labels several columns left of values + ! notes must rejoin on the same row."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "Operating Leases"
+
+    sheet["A1"] = "Restated Financials"
+    sheet["A2"] = "Depreciation on Operating Lease Asset ="
+    sheet["F2"] = 22.195710069381548
+    sheet["F2"].number_format = "0.00"
+    sheet["G2"] = "! I use straight line depreciation"
+    sheet["A3"] = "Adjustment to Operating Earnings ="
+    sheet["F3"] = 10.931387209170413
+    sheet["F3"].number_format = "0.00"
+    sheet["G3"] = "! PV of operating leases * Pre-tax cost of debt"
+    sheet["A4"] = "Adjustment to Total Debt outstanding ="
+    sheet["F4"] = 110.97855034690774
+    sheet["F4"].number_format = "0.00"
+
+    text = parse_xlsx_bytes(workbook_to_bytes(workbook)).pages[0].text
+    dep = next(line for line in text.splitlines() if "Depreciation on Operating" in line)
+    adj = next(line for line in text.splitlines() if "Adjustment to Operating Earnings" in line)
+    debt = next(line for line in text.splitlines() if "Total Debt outstanding" in line)
+    assert "22.2" in dep
+    assert "straight line" in dep
+    assert "10.93" in adj
+    assert "110.98" in debt
+
+
+def test_equity_value_sensitivity_stays_off_year_grid() -> None:
+    """Right-hand sensitivity cube must not inherit DCF year-grid rows or title."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "DCF (50%)"
+
+    sheet["G1"] = "Aberlyn (USDm)"
+    sheet["H1"] = 1993
+    sheet["I1"] = 1994
+    sheet["G2"] = "Total revenue"
+    sheet["H2"] = 0.876
+    sheet["I2"] = 6.75
+    sheet["G3"] = "Net income"
+    sheet["H3"] = -0.7
+    sheet["I3"] = 4.9
+    # One blank row, then D&A continuation (real Aberlyn layout).
+    sheet["G5"] = "Depreciation & Amortization"
+    sheet["H5"] = 0.015
+    sheet["I5"] = 0.12
+
+    sheet["U1"] = "Equity Value Sensitivity"
+    sheet["Y5"] = "Discount Rate:"
+    # Scalar sits inside the cube bbox (Aberlyn: label + 12.8% two columns right).
+    sheet["AA5"] = 0.128
+    sheet["AA5"].number_format = "0.0%"
+    sheet["Y6"] = "Revenue adj."
+    sheet["Y7"] = -0.75
+    sheet["Z7"] = -0.5
+    sheet["AA7"] = 0
+    sheet["Y9"] = 115.0
+    sheet["Z9"] = 138.0
+    sheet["AA9"] = 161.0
+    sheet["V9"] = "Terminal growth"
+    sheet["W9"] = 0.01
+    sheet["W10"] = 0.02
+
+    parsed = parse_xlsx_bytes(workbook_to_bytes(workbook))
+    chunks = Chunker(Settings(openai_api_key="test-key")).split_pages(parsed.pages)
+    equity = next(chunk for chunk in chunks if "Equity Value Sensitivity" in chunk.text)
+    revenue = next(chunk for chunk in chunks if "Total revenue" in chunk.text)
+
+    assert "Depreciation" not in equity.text
+    assert "Total revenue" not in equity.text
+    assert "Aberlyn (USDm)" not in equity.text
+    assert "Discount Rate" in equity.text
+    assert "12.8%" in equity.text
+    assert " > Equity Value Sensitivity" in equity.text or equity.text.startswith(
+        "DCF (50%) > Equity Value Sensitivity"
+    )
+    assert "Equity Value Sensitivity" not in revenue.text
+    assert "Depreciation" in revenue.text
+
+
 def test_chunker_does_not_leak_sheet_breadcrumbs_across_xlsx_pages() -> None:
     """Regression: Financials H1 must not stick onto Exhibit 7 antibody rows."""
     workbook = Workbook()
@@ -232,4 +458,4 @@ def test_chunker_does_not_leak_sheet_breadcrumbs_across_xlsx_pages() -> None:
     assert antibody.page_number == 2
     assert "Exhibit 7 (Rhomed forecast) > Antibody Derivative Products" in antibody.text
     assert "Financials >" not in antibody.text
-    assert "Kolumner (vänster→höger efter radetikett): 1991 | 1992" in antibody.text
+    assert "| Post | 1991 | 1992 |" in antibody.text
