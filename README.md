@@ -8,6 +8,8 @@ optional Cohere Rerank.
 This repo is an **HTTP API**. Connect any frontend to the REST surface; see
 [docs/api_guide.md](docs/api_guide.md) for endpoints and DTOs.
 
+<img src="assets/architecture.png" width="800">
+
 ## Prerequisites
 
 - Python 3.11+
